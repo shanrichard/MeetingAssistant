@@ -116,7 +116,8 @@ struct ContentView: View {
                 AudioLevelView(levels: controller.audioLevels, source: .system, detail: controller.systemState)
                 Spacer()
                 Button { controller.toggleVoice() } label: {
-                    Label(controller.sendingVoice ? "停止发送译音" : "发送我的译音", systemImage: controller.sendingVoice ? "stop.circle.fill" : "waveform")
+                    Label(controller.voiceNeedsRouteRestore ? "恢复原麦克风" : (controller.sendingVoice ? "停止发送译音" : "发送我的译音"),
+                          systemImage: controller.voiceNeedsRouteRestore ? "mic.fill" : (controller.sendingVoice ? "stop.circle.fill" : "waveform"))
                 }.disabled(controller.paused)
             }
             HStack {

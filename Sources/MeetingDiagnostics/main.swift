@@ -48,7 +48,7 @@ actor TranslationProbe {
         var models: Set<String> = []
         do { models = try await client.models(); report("authentication", "pass", "Required model access is checked separately.") }
         catch { report("authentication", "fail", error.localizedDescription); return }
-        for model in ["gpt-live-transcribe", RealtimeTranslator.model, OpenAIClient.textModel, "gpt-4o-mini-tts"] {
+        for model in ["gpt-live-transcribe", RealtimeTranslator.model, LiveInterpreter.model, OpenAIClient.textModel] {
             report("model:" + model, models.contains(model) ? "listed" : "not_listed")
         }
         let text = "We will meet next Tuesday at ten in the morning. The budget is three thousand dollars."

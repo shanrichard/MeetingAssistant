@@ -33,6 +33,7 @@ import MeetingCore
     @Published var voiceState = "译音未发送"
     @Published var voiceRouteState = "开启同传会自动切换系统麦克风，停止后恢复"
     @Published var sendingVoice = false
+    var voiceNeedsRouteRestore: Bool { microphoneRoute.active && !sendingVoice }
     @Published var translationStates: [AudioSource: String] = [:]
     private let store: MeetingStore
     private let apiSession: URLSession?
@@ -43,7 +44,7 @@ import MeetingCore
     private var translators: [AudioSource: RealtimeTranslator] = [:]
     private var closingTranslators: [Task<Void, Never>] = []
     private var translationEpoch = UUID()
-    private var outgoingTranslator: RealtimeTranslator?
+    private var outgoingTranslator: LiveInterpreter?
     private let voice = VoiceOutput()
     private let microphoneRoute: MicrophoneRoute
     private var lastOutgoingStatistics: TranslationStatistics?
@@ -58,7 +59,7 @@ import MeetingCore
     var busy: Bool { recording || processing || starting }
     var microphones: [AudioDevice] { devices.filter { $0.input && !$0.virtual && !$0.name.contains("MeetingAssistant") } }
     var virtualOutputs: [AudioDevice] { devices.filter { $0.input && $0.output && $0.virtual } }
-    var modelNames: String { "原文 gpt-live-transcribe · 同传 gpt-realtime-translate · 总结 \(OpenAIClient.textModel)" }
+    var modelNames: String { "字幕 gpt-realtime-translate / gpt-live-transcribe · 译音 \(LiveInterpreter.model)（\(LiveInterpreter.voice)）· 总结 \(OpenAIClient.textModel)" }
 
     init(storageRoot: URL? = nil, apiSession: URLSession? = nil, credentialStorage: CredentialStorage = KeychainCredentialStorage()) {
         self.apiSession = apiSession
@@ -82,7 +83,10 @@ import MeetingCore
             keyStatus = "升级后请重新填写 Key 并保存。"
         }
         voice.onState = { [weak self] text in self?.voiceState = text }
-        voice.onError = { [weak self] text in self?.error = text; self?.stopVoice() }
+        voice.onError = { [weak self] text in
+            guard let self else { return }
+            self.outgoingFailure(text, epoch: self.voiceEpoch)
+        }
     }
     func savePreferences() {
         if let data = try? JSONEncoder().encode(preferences) { UserDefaults.standard.set(data, forKey: "preferences") }
@@ -132,8 +136,8 @@ import MeetingCore
         do {
             let (_, client) = try makeClient()
             let models = try await client.models()
-            let missing = ["gpt-live-transcribe", RealtimeTranslator.model].filter { !models.contains($0) }
-            keyStatus = missing.isEmpty ? "Key 有效，已发现实时转写与同传模型；实际会话权限在开始时验证" :
+            let missing = ["gpt-live-transcribe", RealtimeTranslator.model, LiveInterpreter.model].filter { !models.contains($0) }
+            keyStatus = missing.isEmpty ? "Key 有效，已发现实时字幕与固定音色译音模型；实际会话权限在开始时验证" :
                 "Key 有效；账户未列出 \(missing.joined(separator: "、"))，需确认模型权限"
         } catch { keyStatus = "验证失败：\(error.localizedDescription)" }
     }
@@ -286,6 +290,7 @@ import MeetingCore
     }
     func toggleVoice() {
         guard recording, !paused else { return }
+        if voiceNeedsRouteRestore { stopVoice(); return }
         if sendingVoice { stopVoice(); return }
         do {
             refreshDevices()
@@ -298,10 +303,11 @@ import MeetingCore
             try microphoneRoute.start(device: device)
             sendingVoice = true
             voiceRouteState = "系统麦克风已切换到 \(device.name) · 停止同传后恢复"
-            let translator = RealtimeTranslator(source: .microphone, key: key,
+            let translator = LiveInterpreter(key: key,
                 language: current?.outgoingLanguage ?? preferences.outgoingLanguage,
-                onSegment: { _ in }, onState: { [weak self] state in await self?.outgoingState(state, epoch: epoch) },
-                onAudio: { [weak self] pcm in await self?.receiveVoice(pcm, epoch: epoch) })
+                onState: { [weak self] state in await self?.outgoingState(state, epoch: epoch) },
+                onAudio: { [weak self] pcm in await self?.receiveVoice(pcm, epoch: epoch) },
+                onFatal: { [weak self] message in await self?.outgoingFailure(message, epoch: epoch) })
             outgoingTranslator = translator
             updateAudioRoutes()
             Task { await translator.start() }
@@ -320,7 +326,11 @@ import MeetingCore
         guard voiceEpoch == epoch, sendingVoice, !paused, recording else { return }
         voice.enqueuePCM(pcm)
     }
-    func stopVoice() {
+    private func outgoingFailure(_ message: String, epoch: UUID) {
+        guard voiceEpoch == epoch, sendingVoice else { return }
+        stopVoice(restoreMicrophone: false); error = message; voiceState = message
+    }
+    func stopVoice(restoreMicrophone: Bool = true) {
         voiceEpoch = UUID()
         if let translator = outgoingTranslator {
             let meetingID = activeID, epoch = voiceEpoch
@@ -334,10 +344,14 @@ import MeetingCore
         outgoingTranslator = nil
         updateAudioRoutes()
         voice.stop(); sendingVoice = false
-        do {
-            try microphoneRoute.restore()
-            voiceRouteState = "同传未开启 · 系统麦克风已恢复或保留你的当前选择"
-        } catch { self.error = error.localizedDescription; voiceRouteState = error.localizedDescription }
+        if restoreMicrophone {
+            do {
+                try microphoneRoute.restore()
+                voiceRouteState = "同传未开启 · 系统麦克风已恢复或保留你的当前选择"
+            } catch { self.error = error.localizedDescription; voiceRouteState = error.localizedDescription }
+        } else {
+            voiceRouteState = "译音故障，虚拟麦克风保持静音 · 点击恢复原麦克风"
+        }
     }
     func finishMeeting(process: Bool = true) async {
         guard recording, let id = activeID else { return }

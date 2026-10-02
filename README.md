@@ -19,7 +19,7 @@
 
 A native SwiftUI app that captures your microphone and system audio, shows live captions with translations, and turns the saved transcript into a summary with references. Bring your own OpenAI API key; no developer-hosted backend is required.
 
-> **Project status:** prototype, source version **0.1.12 (14)**. Offline checks pass, while fresh-machine installation and real remote-listener acceptance remain work in progress. The app interface is currently primarily Simplified Chinese; this README is available in both languages.
+> **Project status:** prototype, source version **0.1.13 (15)**. Offline checks pass, while fresh-machine installation and real remote-listener acceptance remain work in progress. The app interface is currently primarily Simplified Chinese; this README is available in both languages.
 
 ## Features
 
@@ -41,7 +41,7 @@ A native SwiftUI app that captures your microphone and system audio, shows live 
 | OpenAI | Your own API key and access to the models configured in the source. API usage is billed to your account. |
 | Translated speech | A virtual audio device such as [BlackHole 2ch](https://existential.audio/blackhole/). It is not required just to record or display captions. |
 
-The app currently configures `gpt-realtime-translate` with `gpt-live-transcribe` for live audio, and `gpt-5.6-luna` for summaries. API access and connectivity are required; this is not an offline transcription model.
+The app uses `gpt-realtime-translate` with `gpt-live-transcribe` for live captions, `gpt-live-1` with the fixed `marin` voice for outgoing interpreted speech, and `gpt-5.6-luna` for summaries. API access and connectivity are required; this is not an offline transcription model.
 
 ### Build from source
 
@@ -75,7 +75,7 @@ The app detects an existing BlackHole 2ch device. If it is missing, the setup fl
 3. Enable **Send my translated speech**. Meeting Assistant keeps capturing the physical microphone while switching the system input to the virtual device.
 4. Ask another participant to confirm what they hear. Stopping, pausing, ending, or quitting normally restores the original input; a later launch attempts recovery after an abnormal exit.
 
-The meeting app's mute control remains separate. Let participants know that the translated voice is AI-generated. Speech already in the target language may produce no translated audio, so original-speech passthrough is not guaranteed.
+The meeting app's mute control remains separate. Let participants know that the translated voice is AI-generated. Outgoing speech is translated by a separate GPT-Live session with a fixed voice; verify voice consistency, translation quality, and latency with your language pair before relying on it in a meeting. If interpreted audio fails, the virtual microphone stays silent until you explicitly restore the original microphone. Original-speech passthrough is not guaranteed.
 
 [BlackHole](https://github.com/ExistentialAudio/BlackHole) is a separate project by Existential Audio Inc. Its installer is downloaded from the publisher and is not bundled in this repository; its own license applies.
 
