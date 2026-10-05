@@ -19,7 +19,7 @@
 
 A native SwiftUI app that captures your microphone and system audio, shows live captions with translations, and turns the saved transcript into a summary with references. Bring your own OpenAI API key; no developer-hosted backend is required.
 
-> **Project status:** prototype, source version **0.1.14 (16)**. Offline checks pass, while fresh-machine installation and real remote-listener acceptance remain work in progress. The app interface is currently primarily Simplified Chinese; this README is available in both languages.
+> **Project status:** prototype, source version **0.1.15 (17)**. Offline checks pass, while fresh-machine installation and real remote-listener acceptance remain work in progress. The app interface is currently primarily Simplified Chinese; this README is available in both languages.
 
 ## Features
 
@@ -45,7 +45,7 @@ The app uses `gpt-realtime-translate` with `gpt-live-transcribe` for live captio
 
 ### Build from source
 
-No prebuilt app is attached to this repository yet.
+Signed and notarized Apple silicon builds are available from [GitHub Releases](https://github.com/shanrichard/MeetingAssistant/releases/latest).
 
 ```sh
 git clone https://github.com/shanrichard/MeetingAssistant.git
@@ -72,8 +72,10 @@ The app detects an existing BlackHole 2ch device. If it is missing, the setup fl
 
 1. Select the virtual device as the app's translated-audio output.
 2. Configure the meeting app to follow the **system default microphone**. A fixed device selection will not follow automatic switching.
-3. Choose **Interpretation voice** in Settings (13 documented choices, default Marin), then enable **Send my translated speech**. Your choice is saved and stays fixed while sending; stop sending before changing it. Meeting Assistant keeps capturing the physical microphone while switching the system input to the virtual device.
+3. Open **同传声音 → 试听并选择声音…** in Settings to preview all 13 voices (default Marin). Each has a bundled GPT-Live bilingual clip: no network, API key, or API charge is needed to listen. Previewing does not change your selection; click **选用** to save it. Then enable **Send my translated speech**. Your choice is saved and stays fixed while sending; stop sending before changing it. Meeting Assistant keeps capturing the physical microphone while switching the system input to the virtual device.
 4. Ask another participant to confirm what they hear. Stopping, pausing, ending, or quitting normally restores the original input; a later launch attempts recovery after an abnormal exit.
+
+Previews play through your current physical headphones or speakers. Recording disables previews; switching clips or closing the picker stops playback.
 
 The meeting app's mute control remains separate. Let participants know that the translated voice is AI-generated. Outgoing speech is translated by a separate GPT-Live session with a fixed voice; verify voice consistency, translation quality, and latency with your language pair before relying on it in a meeting. If interpreted audio fails, the virtual microphone stays silent until you explicitly restore the original microphone. Original-speech passthrough is not guaranteed.
 

@@ -1,0 +1,98 @@
+{
+  "model": "gpt-live-1",
+  "text": "Hello, this is a preview of my voice. I will translate your words clearly and naturally. 你好，这是我的声音试听。我会清晰、自然地为你翻译。",
+  "samples": [
+    {
+      "voice": "marin",
+      "file": "marin.wav",
+      "seconds": 10.588,
+      "transcript": "Hello, this is a preview of my voice. I will translate your words clearly and naturally.你好,这是我的声音试听。我会清晰、自然地为你翻译。",
+      "sha256": "a250a1ba342be18343bbe724e2f089cd35562f6c25e5a6871d87a1c647f8c3ed"
+    },
+    {
+      "voice": "quartz",
+      "file": "quartz.wav",
+      "seconds": 11.629,
+      "transcript": "Hello, this is a preview of my voice. I will translate your words clearly and naturally. 你好,这是我的声音试听。我会清晰、自然地为你翻译。",
+      "sha256": "a80f97e3c85e84fd392d21b75523e930af6c6be6fb20c47b9789665c29e8b7e7"
+    },
+    {
+      "voice": "ripple",
+      "file": "ripple.wav",
+      "seconds": 9.738,
+      "transcript": "Hello, this is a preview of my voice. I will translate your words clearly and naturally. 你好,这是我的声音试听。我会清晰、自然地为你翻译。",
+      "sha256": "4df6162e257a184cf538402b3817ddd15fe15673b6072220482f552b0effbe33"
+    },
+    {
+      "voice": "vesper",
+      "file": "vesper.wav",
+      "seconds": 10.628,
+      "transcript": "Hello, this is a preview of my voice. I will translate your words clearly and naturally. 你好,这是我的声音试听。我会清晰、自然地为你翻译。",
+      "sha256": "977d4065aebc60b18fb5a34f944e328df0a91d38141f8c80fa9bedeebb259475"
+    },
+    {
+      "voice": "willow",
+      "file": "willow.wav",
+      "seconds": 11.377,
+      "transcript": "Hello, this is a preview of my voice. I will translate your words clearly and naturally.你好,这是我的声音试听。我会清晰、自然地为你翻译。",
+      "sha256": "4562969e6148df8412a4fefc9a04d0894a2abe506d3a02b1325a3a3600ac4852"
+    },
+    {
+      "voice": "stone",
+      "file": "stone.wav",
+      "seconds": 10.61,
+      "transcript": "Hello, this is a preview of my voice. I will translate your words clearly and naturally. 你好,这是我的声音试听。我会清晰、自然地为你翻译。",
+      "sha256": "c85a1db1245ecf133576bd99522a341f5e66e34270b508560ed52663b4778f2c"
+    },
+    {
+      "voice": "gleam",
+      "file": "gleam.wav",
+      "seconds": 11.194,
+      "transcript": "Hello, this is a preview of my voice. I will translate your words clearly and naturally.你好,这是我的声音试听。我会清晰、自然地为你翻译。",
+      "sha256": "5efee5173894dc1751a6031ca652004485c7d56c8a197c22b371f3bd63d80cd7"
+    },
+    {
+      "voice": "meridian",
+      "file": "meridian.wav",
+      "seconds": 10.145,
+      "transcript": "Hello, this is a preview of my voice. I will translate your words clearly and naturally.你好,这是我的声音试听。我会清晰、自然地为你翻译。",
+      "sha256": "6e63c317510c5f9328fedf7131b35d6f5f531b30ed37c8f99be95e57f9570fe3"
+    },
+    {
+      "voice": "bossa",
+      "file": "bossa.wav",
+      "seconds": 11.153,
+      "transcript": "Hello, this is a preview of my voice. I will translate your words clearly and naturally. 你好,这是我的声音试听。我会清晰、自然地为你翻译。",
+      "sha256": "682aa9e03f6b477938c446fdeb6f58fff1b5f5b2efb75b1fdd1364d793521525"
+    },
+    {
+      "voice": "tempo",
+      "file": "tempo.wav",
+      "seconds": 10.757,
+      "transcript": "Hello, this is a preview of my voice. I will translate your words clearly and naturally. 你好,这是我的声音试听。 我会清晰、自然地为你翻译。",
+      "sha256": "7738373e91f96d1a6b0b34a825b325e5977e7a5c07c9b60018a104884944fda4"
+    },
+    {
+      "voice": "beacon",
+      "file": "beacon.wav",
+      "seconds": 11.338,
+      "transcript": " Hello, this is a preview of my voice. I will translate your words clearly and naturally. 你好,这是我的声音试听。 我会清晰、自然地为你翻译。",
+      "sha256": "fac47bdfcd7c8f86a2b22d565d6abd739b6d181d8d5acf22e6b2b58b096c5060"
+    },
+    {
+      "voice": "delta",
+      "file": "delta.wav",
+      "seconds": 8.63,
+      "transcript": "Hello, this is a preview of my voice. I will translate your words clearly and naturally. 你好,这是我的声音试听。我会清晰、自然地为你翻译。",
+      "sha256": "d19f6285e3022631b7aad3abd0054a915af3bb28c70ce2756617cd95947d242e"
+    },
+    {
+      "voice": "cinder",
+      "file": "cinder.wav",
+      "seconds": 11.232,
+      "transcript": "Hello, this is a preview of my voice. I will translate your words clearly and naturally. 你好,这是我的声音试听。我会清晰、自然地为你翻译。",
+      "sha256": "b5441e6a043107d8c1c865f4e665389d1f3c62c9dc4cb3c207fd5e464ee4e38a"
+    }
+  ],
+  "description": "AI-generated bilingual preview clips; synthetic text only. No microphone capture. store=false."
+}

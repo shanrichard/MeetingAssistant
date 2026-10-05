@@ -8,6 +8,7 @@ struct SettingsView: View {
     @State private var verifying = false
     @State private var deleteKey = false
     @State private var showingAudioSetup = false
+    @State private var showingVoicePicker = false
     init(controller: MeetingController) {
         self.controller = controller
         audioSetup = controller.audioSetup
@@ -45,6 +46,7 @@ struct SettingsView: View {
                 Picker("向对方说话的声音", selection: $controller.preferences.outgoingVoice) {
                     ForEach(InterpreterVoice.allCases) { Text($0.label).tag($0) }
                 }.disabled(controller.sendingVoice)
+                Button("试听并选择声音…", systemImage: "play.circle") { showingVoicePicker = true }
                 Text(controller.sendingVoice ? "正在使用 \(controller.preferences.outgoingVoice.name)。如需换声音，请先停止发送译音。" : "自动保存你的选择，每次发送译音时使用同一声音。地区表示说话风格，翻译语言由上方设置决定。")
                     .font(.caption).foregroundStyle(.secondary)
             }
@@ -79,6 +81,7 @@ struct SettingsView: View {
             }
         }.formStyle(.grouped)
             .sheet(isPresented: $showingAudioSetup) { BlackHoleSetupView(setup: audioSetup) }
+            .sheet(isPresented: $showingVoicePicker) { VoicePickerView(controller: controller) }
             .onAppear { audioSetup.refresh() }
             .onDisappear { key = ""; controller.savePreferences() }
             .onChange(of: controller.preferences.subtitleLanguage) { _, _ in controller.savePreferences() }

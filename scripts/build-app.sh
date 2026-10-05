@@ -8,6 +8,9 @@ cp .build/release/MeetingAssistant "$APP/Contents/MacOS/MeetingAssistant.new"
 mv -f "$APP/Contents/MacOS/MeetingAssistant.new" "$APP/Contents/MacOS/MeetingAssistant"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+python3 scripts/check-voice-previews.py
+mkdir -p "$APP/Contents/Resources/VoicePreviews"
+cp Resources/VoicePreviews/*.wav "$APP/Contents/Resources/VoicePreviews/"
 if [[ -n "${MEETING_SIGNING_IDENTITY:-}" ]]; then
     codesign --force --options runtime --timestamp --entitlements Resources/MeetingAssistant.entitlements --sign "$MEETING_SIGNING_IDENTITY" "$APP"
 else
