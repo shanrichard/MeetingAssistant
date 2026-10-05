@@ -3,7 +3,7 @@ import Foundation
 /// The outgoing interpreted voice. Captions use the separate translation session.
 public actor LiveInterpreter {
     public static let model = "gpt-live-1"
-    public static let voice = "marin"
+    private let voice: InterpreterVoice
 
     private let key: String
     private let language: String
@@ -26,15 +26,15 @@ public actor LiveInterpreter {
     private var backlogReported = false
     public private(set) var statistics = TranslationStatistics()
 
-    public init(key: String, language: String,
+    public init(key: String, language: String, voice: InterpreterVoice = .marin,
                 onState: @escaping @Sendable (String) async -> Void,
                 onAudio: @escaping @Sendable (Data) async -> Void,
                 onFatal: @escaping @Sendable (String) async -> Void) {
-        self.key = key; self.language = language
+        self.key = key; self.language = language; self.voice = voice
         self.onState = onState; self.onAudio = onAudio; self.onFatal = onFatal
     }
 
-    public static func startEvent(language: String) -> [String: Any] {
+    public static func startEvent(language: String, voice: InterpreterVoice = .marin) -> [String: Any] {
         let target = AppPreferences.languageName(language)
         return ["type": "session.start", "event_id": UUID().uuidString, "session": [
             "model": model,
@@ -48,7 +48,7 @@ public actor LiveInterpreter {
                 Do not backchannel. Keep the same voice throughout the session.
                 """,
             "audio": ["format": ["type": "audio/pcm", "rate": 24000],
-                      "output": ["voice": voice]],
+                      "output": ["voice": voice.rawValue]],
             "delegation": ["type": "client"],
             "store": false
         ]]
@@ -88,7 +88,7 @@ public actor LiveInterpreter {
             do { try await Task.sleep(nanoseconds: 20_000_000_000) } catch { return }
             await self?.failed(MeetingError.message("固定音色同传连接超时"), generation: token)
         }
-        do { try await send(Self.startEvent(language: language)) }
+        do { try await send(Self.startEvent(language: language, voice: voice)) }
         catch { await failed(error, generation: token) }
     }
 
@@ -145,12 +145,12 @@ public actor LiveInterpreter {
             let audio = resolved?["audio"] as? [String: Any]
             let output = audio?["output"] as? [String: Any]
             guard resolved?["model"] as? String == Self.model,
-                  output?["voice"] as? String == Self.voice else {
+                  output?["voice"] as? String == voice.rawValue else {
                 await failed(MeetingError.message("无法确认同传模型和固定音色"), generation: token, permanent: true); return
             }
             handshake?.cancel(); handshake = nil; ready = true; failures = 0
             statistics.connected = true
-            await onState("固定音色同传已连接（\(Self.voice)）")
+            await onState("固定音色同传已连接（\(voice.name)）")
             startSender()
         case "session.output_audio.delta":
             guard let delta = event["delta"] as? String,

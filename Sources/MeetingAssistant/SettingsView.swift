@@ -41,6 +41,13 @@ struct SettingsView: View {
                     ForEach(AppPreferences.languages, id: \.0) { Text($0.1).tag($0.0) }
                 }
             }.disabled(controller.busy)
+            Section("同传声音") {
+                Picker("向对方说话的声音", selection: $controller.preferences.outgoingVoice) {
+                    ForEach(InterpreterVoice.allCases) { Text($0.label).tag($0) }
+                }.disabled(controller.sendingVoice)
+                Text(controller.sendingVoice ? "正在使用 \(controller.preferences.outgoingVoice.name)。如需换声音，请先停止发送译音。" : "自动保存你的选择，每次发送译音时使用同一声音。地区表示说话风格，翻译语言由上方设置决定。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("音频设备") {
                 Picker("真实麦克风", selection: $controller.preferences.microphoneUID) {
                     Text("请选择").tag("")
@@ -76,6 +83,7 @@ struct SettingsView: View {
             .onDisappear { key = ""; controller.savePreferences() }
             .onChange(of: controller.preferences.subtitleLanguage) { _, _ in controller.savePreferences() }
             .onChange(of: controller.preferences.outgoingLanguage) { _, _ in controller.savePreferences() }
+            .onChange(of: controller.preferences.outgoingVoice) { _, _ in controller.savePreferences() }
             .onChange(of: controller.preferences.microphoneUID) { _, _ in controller.savePreferences() }
             .onChange(of: controller.preferences.outputUID) { _, _ in controller.savePreferences(); audioSetup.refresh() }
             .alert("删除这台 Mac 中保存的 API Key？", isPresented: $deleteKey) {

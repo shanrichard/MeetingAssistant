@@ -59,7 +59,7 @@ import MeetingCore
     var busy: Bool { recording || processing || starting }
     var microphones: [AudioDevice] { devices.filter { $0.input && !$0.virtual && !$0.name.contains("MeetingAssistant") } }
     var virtualOutputs: [AudioDevice] { devices.filter { $0.input && $0.output && $0.virtual } }
-    var modelNames: String { "字幕 gpt-realtime-translate / gpt-live-transcribe · 译音 \(LiveInterpreter.model)（\(LiveInterpreter.voice)）· 总结 \(OpenAIClient.textModel)" }
+    var modelNames: String { "字幕 gpt-realtime-translate / gpt-live-transcribe · 译音 \(LiveInterpreter.model)（\(preferences.outgoingVoice.name)）· 总结 \(OpenAIClient.textModel)" }
 
     init(storageRoot: URL? = nil, apiSession: URLSession? = nil, credentialStorage: CredentialStorage = KeychainCredentialStorage()) {
         self.apiSession = apiSession
@@ -305,6 +305,7 @@ import MeetingCore
             voiceRouteState = "系统麦克风已切换到 \(device.name) · 停止同传后恢复"
             let translator = LiveInterpreter(key: key,
                 language: current?.outgoingLanguage ?? preferences.outgoingLanguage,
+                voice: preferences.outgoingVoice,
                 onState: { [weak self] state in await self?.outgoingState(state, epoch: epoch) },
                 onAudio: { [weak self] pcm in await self?.receiveVoice(pcm, epoch: epoch) },
                 onFatal: { [weak self] message in await self?.outgoingFailure(message, epoch: epoch) })

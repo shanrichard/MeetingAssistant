@@ -160,10 +160,25 @@ public func timestamp(_ seconds: Double) -> String {
 public struct AppPreferences: Codable, Sendable {
     public var subtitleLanguage = "zh"
     public var outgoingLanguage = "en"
+    public var outgoingVoice: InterpreterVoice = .marin
     public var microphoneUID = ""
     public var outputUID = ""
     public var vocabulary = ""
     public init() {}
+    private enum CodingKeys: String, CodingKey {
+        case subtitleLanguage, outgoingLanguage, outgoingVoice, microphoneUID, outputUID, vocabulary
+    }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        subtitleLanguage = try values.decodeIfPresent(String.self, forKey: .subtitleLanguage) ?? "zh"
+        outgoingLanguage = try values.decodeIfPresent(String.self, forKey: .outgoingLanguage) ?? "en"
+        // Older releases have no voice setting. An unknown voice must not discard the other preferences.
+        outgoingVoice = (try values.decodeIfPresent(String.self, forKey: .outgoingVoice))
+            .flatMap(InterpreterVoice.init(rawValue:)) ?? .marin
+        microphoneUID = try values.decodeIfPresent(String.self, forKey: .microphoneUID) ?? ""
+        outputUID = try values.decodeIfPresent(String.self, forKey: .outputUID) ?? ""
+        vocabulary = try values.decodeIfPresent(String.self, forKey: .vocabulary) ?? ""
+    }
     public static let languages = [("zh", "简体中文"), ("en", "English"), ("ja", "日本語"), ("ko", "한국어"), ("fr", "Français"), ("de", "Deutsch"), ("es", "Español")]
     public static func languageName(_ code: String) -> String { languages.first { $0.0 == code }?.1 ?? code }
 }
