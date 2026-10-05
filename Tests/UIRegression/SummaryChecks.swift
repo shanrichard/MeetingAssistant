@@ -60,9 +60,9 @@ private final class SummaryProtocol: URLProtocol {
         let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
         guard json["model"] as? String == "gpt-5.6-luna",
               let input = json["input"] as? String,
-              input.contains("live-0"), input.contains("live-15"), !input.contains("final-0"),
+              input.contains("Original statement 0"), input.contains("Original statement 15"), !input.contains("Incomplete"),
               input.split(separator: "\n").count == 16 else { throw MeetingError.message("Summary dropped or replaced original speech") }
-        let summary = "{\"title\":\"产品发布计划\",\"overview\":[{\"text\":\"New summary\",\"evidence\":[\"live-15\"]}],\"decisions\":[],\"actions\":[],\"questions\":[]}"
+        let summary = "{\"title\":\"产品发布计划\",\"overview\":[{\"text\":\"New summary\",\"evidence\":[16]}],\"decisions\":[],\"actions\":[],\"questions\":[]}"
         return (200, try JSONSerialization.data(withJSONObject: ["status": "completed", "output": [["content": [["type": "output_text", "text": summary]]]]]))
     }
     await controller.updateSummary()
@@ -98,7 +98,7 @@ private final class SummaryProtocol: URLProtocol {
         guard durable.liveSegments.last == tail, durable.state == "recorded", durable.duration == 165 else {
             throw MeetingError.message("Summary started before the realtime tail was saved")
         }
-        let summary = "{\"title\":\"发布计划与最终承诺\",\"overview\":[{\"text\":\"Tail summary\",\"evidence\":[\"tail\"]}],\"decisions\":[],\"actions\":[],\"questions\":[]}"
+        let summary = "{\"title\":\"发布计划与最终承诺\",\"overview\":[{\"text\":\"Tail summary\",\"evidence\":[17]}],\"decisions\":[],\"actions\":[],\"questions\":[]}"
         return (200, try JSONSerialization.data(withJSONObject: ["status": "completed", "output": [["content": [["type": "output_text", "text": summary]]]]]))
     }
     await controller.finalizeRecording(id: meeting.id, chunks: meeting.chunks, duration: 165, generateSummary: true)
@@ -152,7 +152,7 @@ private final class SummaryProtocol: URLProtocol {
         if !condition { throw MeetingError.message(message) }
     }
     let response = try JSONSerialization.data(withJSONObject: ["status": "completed", "output": [["content": [[
-        "type": "output_text", "text": "{\"title\":\"模型建议标题\",\"overview\":[{\"text\":\"发布计划\",\"evidence\":[\"source\"]}],\"decisions\":[],\"actions\":[],\"questions\":[]}"
+        "type": "output_text", "text": "{\"title\":\"模型建议标题\",\"overview\":[{\"text\":\"发布计划\",\"evidence\":[1]}],\"decisions\":[],\"actions\":[],\"questions\":[]}"
     ]]]]])
     SummaryProtocol.handler = { _ in (200, response) }
     controller.renameMeeting("团队定稿标题")

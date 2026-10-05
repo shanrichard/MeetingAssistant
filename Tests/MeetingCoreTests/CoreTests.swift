@@ -305,16 +305,16 @@ struct APIContractTests {
             let json = try requestJSON(request)
             let input = try require(json["input"] as? String)
             let lines = try input.split(separator: "\n").map {
-                try require(JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: String])
+                try require(JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any])
             }
-            expect(lines.count == 1); expect(lines.first?["id"] == "speech")
-            expect(lines.first?["text"] == "Hello")
+            expect(lines.count == 1); expect(lines.first?["id"] as? Int == 1)
+            expect(lines.first?["text"] as? String == "Hello")
             let format = try require((json["text"] as? [String: Any])?["format"] as? [String: Any])
             let schema = try require(format["schema"] as? [String: Any])
             let properties = try require(schema["properties"] as? [String: Any])
             expect((schema["required"] as? [String])?.contains("title") == true)
             expect((properties["title"] as? [String: Any])?["type"] as? String == "string")
-            let summary = "{\"title\":\"团队问候\",\"overview\":[{\"text\":\"Greeting\",\"evidence\":[\"speech\"]}],\"decisions\":[],\"actions\":[],\"questions\":[]}"
+            let summary = "{\"title\":\"团队问候\",\"overview\":[{\"text\":\"Greeting\",\"evidence\":[1]}],\"decisions\":[],\"actions\":[],\"questions\":[]}"
             return (200, try JSONSerialization.data(withJSONObject: ["status": "completed", "output": [["content": [["type": "output_text", "text": summary]]]]]))
         }
         let client = OpenAIClient(key: "test-key", session: URLSession(configuration: config))
@@ -371,6 +371,78 @@ struct APIContractTests {
         let result = try await OpenAIClient(key: "test-key", session: URLSession(configuration: config)).summarize(segments, language: "en")
         expect(result.title == "Whole meeting topic")
         expect(requests == 3)
+    }
+    private func evidenceRange(_ request: URLRequest) throws -> [String: Any] {
+        let json = try requestJSON(request)
+        let format = try require((json["text"] as? [String: Any])?["format"] as? [String: Any])
+        let schema = try require(format["schema"] as? [String: Any])
+        let properties = try require(schema["properties"] as? [String: Any])
+        let point = try require((properties["overview"] as? [String: Any])?["items"] as? [String: Any])
+        let fields = try require(point["properties"] as? [String: Any])
+        return try require((fields["evidence"] as? [String: Any])?["items"] as? [String: Any])
+    }
+    private func summaryResponse(title: String = "Release planning", evidence: [Any]) throws -> (Int, Data) {
+        let summary: [String: Any] = ["title": title, "overview": [["text": "Release plan", "evidence": evidence]],
+                                      "decisions": [], "actions": [], "questions": []]
+        let text = String(decoding: try JSONSerialization.data(withJSONObject: summary), as: UTF8.self)
+        return (200, try JSONSerialization.data(withJSONObject: ["status": "completed", "output": [["content": [["type": "output_text", "text": text]]]]]))
+    }
+    func testSummaryMapsNumbersToExactLongSourceIDs() async throws {
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [MockProtocol.self]
+        let ids = ["system-source-01A10AFB-4B81-76A2-B304-EE5940F290CF-0", "system-source-01A10AFB-4B81-76A2-B304-EE5940F290CF-1"]
+        let segments = ids.enumerated().map { TranscriptSegment(id: $0.element, source: .system,
+            start: Double($0.offset), end: Double($0.offset + 1), text: "Statement \($0.offset)") }
+        MockProtocol.handler = { request in
+            let input = try require(requestJSON(request)["input"] as? String)
+            expect(!ids.contains(where: input.contains))
+            let range = try evidenceRange(request)
+            expect(range["type"] as? String == "integer")
+            expect(range["minimum"] as? Int == 1 && range["maximum"] as? Int == 2)
+            return try summaryResponse(evidence: [2, 1])
+        }
+        let summary = try await OpenAIClient(key: "test", session: URLSession(configuration: config)).summarize(segments, language: "en")
+        expect(summary.overview.first?.evidence == [ids[1], ids[0]])
+    }
+    func testSummaryRejectsInvalidNumbersAndKeepsSpecificErrors() async throws {
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [MockProtocol.self]
+        let client = OpenAIClient(key: "test", session: URLSession(configuration: config))
+        let segment = TranscriptSegment(id: "real", source: .system, start: 0, end: 1, text: "Release plan")
+        for refs: [Any] in [[0], [-1], [2], [1.5], ["real"], []] {
+            var requests = 0
+            MockProtocol.handler = { _ in requests += 1; return try summaryResponse(evidence: refs) }
+            do { _ = try await client.summarize([segment], language: "en"); recordFailure("Accepted invalid source number") }
+            catch { expect(error.localizedDescription.contains("原文引用") || error.localizedDescription.contains("返回格式")) }
+            expect(requests == 2)
+        }
+        MockProtocol.handler = { _ in try summaryResponse(title: "  ", evidence: [1]) }
+        do { _ = try await client.summarize([segment], language: "en"); recordFailure("Accepted blank title") }
+        catch { expect(error.localizedDescription == "总结未包含有效的会议名称，请重新生成。") }
+        var requests = 0
+        MockProtocol.handler = { _ in requests += 1; return try summaryResponse(evidence: requests == 1 ? ["wrong"] : [1]) }
+        let recovered = try await client.summarize([segment], language: "en")
+        expect(requests == 2 && recovered.overview.first?.evidence == ["real"])
+    }
+    func testPartialSummariesValidateBatchRangesBeforeConsolidation() async throws {
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [MockProtocol.self]
+        let segments = (0..<2).map { TranscriptSegment(id: "long-source-\($0)", source: .system,
+            start: Double($0), end: Double($0 + 1), text: String(repeating: "x", count: 30000)) }
+        var requests = 0
+        MockProtocol.handler = { request in
+            requests += 1
+            let range = try evidenceRange(request)
+            let expected = requests < 3 ? 1...1 : (requests == 3 ? 2...2 : 1...2)
+            expect(range["minimum"] as? Int == expected.lowerBound && range["maximum"] as? Int == expected.upperBound)
+            if requests == 4 {
+                let input = try require(requestJSON(request)["input"] as? String)
+                expect(input.contains("Part 1") && input.contains("Part 2") && !input.contains("long-source"))
+                return try summaryResponse(title: "Whole meeting", evidence: [1, 2])
+            }
+            // A source from another batch is rejected even though it exists in the meeting.
+            return try summaryResponse(title: requests <= 2 ? "Part 1" : "Part 2", evidence: [requests == 2 ? 1 : 2])
+        }
+        let summary = try await OpenAIClient(key: "test", session: URLSession(configuration: config)).summarize(segments, language: "en")
+        expect(requests == 4 && summary.title == "Whole meeting")
+        expect(summary.overview.first?.evidence == segments.map(\.id))
     }
     func testRequestUsesUserKeyAndOfficialEndpoint() async throws {
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [MockProtocol.self]
@@ -436,6 +508,9 @@ func recordFailure(_ message: String) { failures.append(message) }
             try await api.testSummarySkipsBlankSegmentsAndRejectsEmptyMeetingsLocally()
             try await api.testOversizedFirstSegmentDoesNotCreateAnEmptySummaryBatch()
             try await api.testLongMeetingUsesConsolidatedTitle()
+            try await api.testSummaryMapsNumbersToExactLongSourceIDs()
+            try await api.testSummaryRejectsInvalidNumbersAndKeepsSpecificErrors()
+            try await api.testPartialSummariesValidateBatchRangesBeforeConsolidation()
             try await api.testRequestUsesUserKeyAndOfficialEndpoint()
             await api.testServerErrorCannotEchoCredential()
         } catch { failures.append(error.localizedDescription) }

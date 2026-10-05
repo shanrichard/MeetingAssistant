@@ -48,25 +48,25 @@ public final class OpenAIClient: @unchecked Sendable {
         guard !result.isEmpty else { throw MeetingError.message("模型没有返回文本。") }
         return result
     }
-    private func response(instructions: String, input: String, json: Bool = false) async throws -> String {
+    private func response(instructions: String, input: String, evidenceRange: ClosedRange<Int>) async throws -> String {
         guard !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw MeetingError.message("没有可处理的文本。")
         }
         var body: [String: Any] = ["model": Self.textModel, "store": false,
-            "reasoning": ["effort": "low"], "max_output_tokens": json ? 12000 : 3000,
+            "reasoning": ["effort": "low"], "max_output_tokens": 12000,
             "instructions": instructions, "input": input]
-        if json {
-            let point: [String: Any] = ["type": "object", "additionalProperties": false,
-                "properties": ["text": ["type": "string", "minLength": 1], "evidence": ["type": "array", "minItems": 1, "items": ["type": "string"]]],
-                "required": ["text", "evidence"]]
-            var fields = Dictionary(uniqueKeysWithValues: ["overview", "decisions", "actions", "questions"].map {
-                ($0, ["type": "array", "items": point] as [String: Any])
-            })
-            fields["title"] = ["type": "string", "minLength": 1, "maxLength": MeetingSummary.maximumTitleLength]
-            body["text"] = ["format": ["type": "json_schema", "name": "meeting_summary", "strict": true,
-                "schema": ["type": "object", "additionalProperties": false, "properties": fields,
-                    "required": ["title", "overview", "decisions", "actions", "questions"]]]]
-        }
+        let point: [String: Any] = ["type": "object", "additionalProperties": false,
+            "properties": ["text": ["type": "string", "minLength": 1],
+                "evidence": ["type": "array", "minItems": 1,
+                    "items": ["type": "integer", "minimum": evidenceRange.lowerBound, "maximum": evidenceRange.upperBound]]],
+            "required": ["text", "evidence"]]
+        var fields = Dictionary(uniqueKeysWithValues: ["overview", "decisions", "actions", "questions"].map {
+            ($0, ["type": "array", "items": point] as [String: Any])
+        })
+        fields["title"] = ["type": "string", "minLength": 1, "maxLength": MeetingSummary.maximumTitleLength]
+        body["text"] = ["format": ["type": "json_schema", "name": "meeting_summary", "strict": true,
+            "schema": ["type": "object", "additionalProperties": false, "properties": fields,
+                "required": ["title", "overview", "decisions", "actions", "questions"]]]]
         let data = try await perform(request(path: "responses", body: JSONSerialization.data(withJSONObject: body)))
         return try Self.responseText(data)
     }
@@ -82,15 +82,18 @@ public final class OpenAIClient: @unchecked Sendable {
         Write a concise, specific title in the same language that captures the meeting's main topic, based only on
         the supplied content. Prefer 6-12 words or 8-24 Chinese characters, at most 80 characters. Use a plain
         single-line topic phrase, without Markdown, surrounding quotes, a generic "Meeting" prefix, or a timestamp.
-        Each array element must have text (string) and evidence (array of original segment ID strings).
-        Every point requires at least one exact source ID. Only explicit decisions and commitments belong in
+        Each array element must have text (string) and evidence (array of integer source numbers from the id fields).
+        Every point requires at least one source number. Only explicit decisions and commitments belong in
         decisions/actions. Do not invent owners, dates, facts or resolutions; include unknowns in questions.
         Source labels identify audio inputs, not individual speakers. System audio can contain multiple people.
         Attribute an action to a named person only when the transcript explicitly supports that attribution.
         If no evidence exists for a category return an empty array. At most 8 items per category.
         """
-        let lines = try segments.map { segment -> String in
-            let object = ["id": segment.id, "time": timestamp(segment.start),
+        // Keep durable transcript IDs local. Models only cite bounded integers, which cannot
+        // be truncated or mistyped like the long realtime IDs used for navigation and storage.
+        let sourceIDs = segments.map(\.id)
+        let lines = try segments.enumerated().map { index, segment -> String in
+            let object: [String: Any] = ["id": index + 1, "time": timestamp(segment.start),
                 "source": segment.source.title, "text": segment.text]
             return String(decoding: try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]), as: UTF8.self)
         }
@@ -102,24 +105,74 @@ public final class OpenAIClient: @unchecked Sendable {
         var input = lines.joined(separator: "\n")
         if batches.count > 1 {
             var partials: [String] = []
+            var firstSource = 1
             for batch in batches {
                 try Task.checkCancellation()
-                partials.append(try await response(instructions: instructions, input: batch.joined(separator: "\n"), json: true))
+                let range = firstSource...(firstSource + batch.count - 1)
+                let partial = try await summaryResponse(instructions: instructions, input: batch.joined(separator: "\n"),
+                                                        evidenceRange: range, sourceIDs: sourceIDs)
+                partials.append(String(decoding: try JSONEncoder().encode(partial), as: UTF8.self))
+                firstSource += batch.count
             }
-            input = "Consolidate these partial summaries, keeping their original evidence IDs. Choose one title for the whole meeting, not just the last part:\n" + partials.joined(separator: "\n")
+            input = "Consolidate these partial summaries, keeping their evidence source numbers. Choose one title for the whole meeting, not just the last part:\n" + partials.joined(separator: "\n")
         }
-        let ids = Set(segments.map(\.id))
+        let result = try await summaryResponse(instructions: instructions, input: input,
+                                               evidenceRange: 1...segments.count, sourceIDs: sourceIDs)
+        return try result.resolved(sourceIDs: sourceIDs, evidenceRange: 1...segments.count)
+    }
+    private func summaryResponse(instructions: String, input: String, evidenceRange: ClosedRange<Int>,
+                                 sourceIDs: [String]) async throws -> SummaryResponse {
         for attempt in 0..<2 {
-            let reminder = attempt == 0 ? "" : "\nPrevious output failed title or evidence validation. Include a nonempty, concise title of at most 80 characters. Copy each evidence string EXACTLY from an input id field. Omit points without evidence; never include an empty evidence array."
-            let result = try await response(instructions: instructions + reminder, input: input, json: true)
-            let summary = try JSONDecoder().decode(MeetingSummary.self, from: Data(result.utf8))
-            if let valid = try? summary.validated(against: ids) { return valid }
+            try Task.checkCancellation()
+            let reminder = attempt == 0 ? "" : "\nPrevious output failed validation. Include a nonempty title of at most 80 characters. Evidence must contain integer source numbers from the supplied input, in the range \(evidenceRange.lowerBound)...\(evidenceRange.upperBound). Omit points without evidence."
+            let result = try await response(instructions: instructions + reminder, input: input, evidenceRange: evidenceRange)
+            do {
+                var summary = try JSONDecoder().decode(SummaryResponse.self, from: Data(result.utf8))
+                let valid = try summary.resolved(sourceIDs: sourceIDs, evidenceRange: evidenceRange)
+                summary.title = valid.title ?? summary.title
+                return summary
+            } catch {
+                if attempt == 1 {
+                    if error is DecodingError { throw MeetingError.message("总结返回格式不完整，请重新生成。") }
+                    throw error
+                }
+            }
         }
-        throw MeetingError.message("总结包含无效的标题或原文引用，请重新生成。")
+        throw MeetingError.message("总结返回格式不完整，请重新生成。")
     }
     public func speech(_ text: String) async throws -> Data {
         let body: [String: Any] = ["model": "gpt-4o-mini-tts", "voice": "marin", "input": text,
             "response_format": "pcm", "instructions": "Speak clearly at a natural conversational pace. Read exactly the provided text."]
         return try await perform(request(path: "audio/speech", body: JSONSerialization.data(withJSONObject: body)))
+    }
+}
+
+/// API-only representation. Saved summaries still use the original transcript IDs.
+private struct SummaryResponse: Codable {
+    struct Point: Codable {
+        var text: String
+        var evidence: [Int]
+    }
+    var title: String
+    var overview: [Point]
+    var decisions: [Point]
+    var actions: [Point]
+    var questions: [Point]
+
+    func resolved(sourceIDs: [String], evidenceRange: ClosedRange<Int>) throws -> MeetingSummary {
+        func resolve(_ points: [Point]) throws -> [SummaryPoint] {
+            try points.map { point in
+                let ids = try point.evidence.map { number in
+                    guard evidenceRange.contains(number), number > 0, number <= sourceIDs.count else {
+                        throw MeetingError.message("总结包含无效的原文引用，请重新生成。")
+                    }
+                    return sourceIDs[number - 1]
+                }
+                return SummaryPoint(text: point.text, evidence: ids)
+            }
+        }
+        return try MeetingSummary(title: title, overview: resolve(overview), decisions: resolve(decisions),
+                                  actions: resolve(actions), questions: resolve(questions))
+            .validated(against: Set(sourceIDs))
     }
 }
