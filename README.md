@@ -19,7 +19,7 @@
 
 A native SwiftUI app that captures your microphone and system audio, shows live captions with translations, and turns the saved transcript into a summary with references. Bring your own OpenAI API key; no developer-hosted backend is required.
 
-> **Project status:** prototype, source version **0.1.16 (18)**. Offline checks pass, while fresh-machine installation and real remote-listener acceptance remain work in progress. The app interface is currently primarily Simplified Chinese; this README is available in both languages.
+> **Project status:** prototype, source version **0.1.17 (19)**. Offline checks pass, while fresh-machine installation and real remote-listener acceptance remain work in progress. The app interface is currently primarily Simplified Chinese; this README is available in both languages.
 
 ## Features
 
@@ -27,7 +27,7 @@ A native SwiftUI app that captures your microphone and system audio, shows live 
 - **See-through floating captions** — during a meeting, captions float above Zoom, Meet, or Teams (including full screen) on an adjustable translucent background, so faces and shared screens stay visible. Drag, resize, or turn on click-through so clicks reach the meeting window.
 - **Two audio sources** — microphone and system audio are recorded separately on a shared timeline.
 - **Translated speech** — send AI-generated speech to a meeting through a virtual audio device, with automatic system-input switching and restoration.
-- **Transcript-based summaries** — summarize the live text already received, with references back to the transcript. Failed summaries preserve existing notes and source text.
+- **Transcript-based summaries** — summarize the live text already received, with references back to the transcript and an automatic topic-based meeting title. Manual titles are retained; failures preserve the existing title, notes, and source text.
 - **Local meeting library** — keep recordings and transcripts on your Mac, export Markdown, and delete individual meetings.
 - **Your own credentials** — API keys are saved in macOS Keychain. There are no shared keys or analytics services.
 
@@ -66,7 +66,7 @@ If the compiler reports an incompatible SDK, select a matching Xcode/Command Lin
 2. Select a physical microphone, the caption/summary language, and the language you want to speak to others.
 3. Start a meeting and grant the requested microphone and system-audio permissions. Headphones are recommended.
 4. Floating captions appear above your meeting window. Hover to show controls for pause, translated speech, font size, background opacity, and click-through. Move the pointer onto the lock in the top-right corner to turn click-through off. **⇧⌘T** shows or hides the captions; defaults are under **Settings → 悬浮字幕**.
-5. End the meeting to save the live transcript and recordings, then generate a summary from the transcript. You can retry a failed summary later.
+5. End the meeting to save the live transcript and recordings, then generate a summary and a concise topic-based title from the transcript. Manually chosen titles are retained. You can retry a failed summary later.
 
 ## Send translated speech
 

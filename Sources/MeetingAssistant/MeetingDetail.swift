@@ -138,7 +138,7 @@ struct MeetingDetailView: View {
                     SummarySection(title: "已作出的决策", icon: "checkmark.seal", points: summary.decisions, marker: .check, meeting: meeting, open: openEvidence)
                     SummarySection(title: "待办事项", icon: "checklist", points: summary.actions, marker: .todo, meeting: meeting, open: openEvidence)
                     SummarySection(title: "待确认的问题", icon: "questionmark.bubble", points: summary.questions, marker: .dot, meeting: meeting, open: openEvidence)
-                    Text("根据实时原文生成，每条附原文引用，点击可跳到对话全文。").font(.caption).foregroundStyle(.tertiary)
+                    Text("根据实时原文生成。点击条目右侧的引用图标可查看原文。").font(.caption).foregroundStyle(.tertiary)
                 }
                 .frame(maxWidth: 820, alignment: .leading)
                 .padding(.horizontal, 28).padding(.vertical, 22)
@@ -187,14 +187,11 @@ private struct SummarySection: View {
             ForEach(points) { point in
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
                     markerView
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(point.text).textSelection(.enabled).lineSpacing(3).fixedSize(horizontal: false, vertical: true)
-                        HStack(spacing: 12) {
-                            ForEach(point.evidence, id: \.self) { id in
-                                Button { open(id) } label: { Label(evidenceLabel(id), systemImage: "quote.opening") }
-                                    .buttonStyle(.link).font(.caption)
-                            }
-                        }
+                    Text(point.text).textSelection(.enabled).lineSpacing(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if !point.evidence.isEmpty {
+                        SummaryEvidenceButton(point: point, meeting: meeting, open: open)
                     }
                 }
             }
@@ -210,9 +207,69 @@ private struct SummarySection: View {
         case .todo: Image(systemName: "circle").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
         }
     }
-    private func evidenceLabel(_ id: String) -> String {
-        let segment = meeting.liveSegments.first { $0.id == id } ?? meeting.finalSegments.first { $0.id == id }
-        return segment.map { "原文 \(timestamp($0.start))" } ?? "查看原文"
+}
+
+private struct SummaryEvidenceButton: View {
+    let point: SummaryPoint
+    let meeting: Meeting
+    let open: (String) -> Void
+    @State private var showingEvidence = false
+
+    var body: some View {
+        Button { showingEvidence.toggle() } label: {
+            Image(systemName: "quote.opening")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 24, height: 22)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("查看原文引用（\(point.evidence.count) 处）")
+        .accessibilityLabel("查看原文引用")
+        .accessibilityValue("\(point.evidence.count) 处")
+        .accessibilityHint(point.text)
+        .popover(isPresented: $showingEvidence, arrowEdge: .leading) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("原文引用").font(.headline)
+                    Spacer()
+                    Text("\(point.evidence.count) 处").font(.caption).foregroundStyle(.secondary)
+                }
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        ForEach(Array(point.evidence.enumerated()), id: \.offset) { index, id in
+                            if index > 0 { Divider() }
+                            if let segment = meeting.liveSegments.first(where: { $0.id == id }) ?? meeting.finalSegments.first(where: { $0.id == id }) {
+                                VStack(alignment: .leading, spacing: 7) {
+                                    HStack(spacing: 8) {
+                                        Text(timestamp(segment.start)).monospacedDigit()
+                                        Text(meeting.speaker(for: segment))
+                                        Spacer()
+                                        Button {
+                                            showingEvidence = false
+                                            open(id)
+                                        } label: {
+                                            Label("查看上下文", systemImage: "arrow.up.right")
+                                        }
+                                        .buttonStyle(.link)
+                                        .accessibilityLabel("查看 \(timestamp(segment.start)) 的对话上下文")
+                                    }
+                                    .font(.caption).foregroundStyle(.secondary)
+                                    Text(segment.text).font(.callout).textSelection(.enabled)
+                                        .lineSpacing(3).fixedSize(horizontal: false, vertical: true)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                            } else {
+                                Text("这处原文已不可用").font(.callout).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+                .frame(maxHeight: 320)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(16).frame(width: 380)
+        }
     }
 }
 

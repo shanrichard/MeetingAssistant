@@ -46,26 +46,39 @@ public struct SummaryPoint: Codable, Identifiable, Sendable {
 }
 
 public struct MeetingSummary: Codable, Sendable {
+    // Optional only for summaries saved before content-based titles were introduced.
+    public var title: String?
+    public static let maximumTitleLength = 80
     public var overview: [SummaryPoint]
     public var decisions: [SummaryPoint]
     public var actions: [SummaryPoint]
     public var questions: [SummaryPoint]
-    public init(overview: [SummaryPoint], decisions: [SummaryPoint], actions: [SummaryPoint], questions: [SummaryPoint]) {
+    public init(title: String? = nil, overview: [SummaryPoint], decisions: [SummaryPoint], actions: [SummaryPoint], questions: [SummaryPoint]) {
+        self.title = title
         self.overview = overview; self.decisions = decisions; self.actions = actions; self.questions = questions
     }
     public func validated(against ids: Set<String>) throws -> MeetingSummary {
+        let title = (title ?? "").split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        guard !title.isEmpty, title.count <= Self.maximumTitleLength else {
+            throw MeetingError.message("总结未包含有效的会议名称，请重新生成。")
+        }
         for point in overview + decisions + actions + questions {
             guard !point.text.isEmpty, !point.evidence.isEmpty, point.evidence.allSatisfy(ids.contains) else {
                 throw MeetingError.message("总结包含无效的原文引用，请重新生成。")
             }
         }
-        return self
+        var result = self
+        result.title = title
+        return result
     }
 }
+
+public enum MeetingTitleSource: String, Codable, Sendable { case automatic, manual }
 
 public struct Meeting: Codable, Identifiable, Sendable {
     public var id: UUID
     public var title: String
+    public var titleSource: MeetingTitleSource?
     public var createdAt: Date
     public var duration: Double = 0
     public var state: String = "recording"
@@ -78,9 +91,24 @@ public struct Meeting: Codable, Identifiable, Sendable {
     public var processedChunks: [String] = []
     public var summary: MeetingSummary?
     public var notices: [String] = []
-    public init(id: UUID = UUID(), title: String, subtitleLanguage: String = "zh", outgoingLanguage: String = "en") {
-        self.id = id; self.title = title; self.createdAt = Date()
+    public init(id: UUID = UUID(), title: String? = nil, subtitleLanguage: String = "zh", outgoingLanguage: String = "en") {
+        self.id = id; self.createdAt = Date()
+        self.title = title ?? Self.defaultTitle(at: createdAt)
+        self.titleSource = title == nil ? .automatic : .manual
         self.subtitleLanguage = subtitleLanguage; self.outgoingLanguage = outgoingLanguage
+    }
+    public static func defaultTitle(at date: Date) -> String {
+        "会议 \(date.formatted(date: .abbreviated, time: .shortened))"
+    }
+    public mutating func applySummary(_ summary: MeetingSummary) {
+        // Legacy records have no provenance; only replace their exact default name.
+        let automaticallyNamed = titleSource == .automatic || (titleSource == nil && title == Self.defaultTitle(at: createdAt))
+        if automaticallyNamed, let generatedTitle = summary.title {
+            title = generatedTitle
+            titleSource = .automatic
+        }
+        self.summary = summary
+        state = "complete"
     }
     public var defaultTranscriptSource: TranscriptSource {
         .live

@@ -175,9 +175,43 @@ struct CoreTests {
         expect(try store.all().count == 1)
     }
     func testSummaryRejectsMissingOrInventedEvidence() throws {
-        let summary = MeetingSummary(overview: [.init(text: "test", evidence: ["invented"])], decisions: [], actions: [], questions: [])
+        let summary = MeetingSummary(title: "Test discussion", overview: [.init(text: "test", evidence: ["invented"])], decisions: [], actions: [], questions: [])
         expectThrows { _ = try summary.validated(against: ["real"]) }
         _ = try summary.validated(against: ["invented"])
+    }
+    func testSummaryTitlesAndLegacyMeetingNames() throws {
+        var summary = MeetingSummary(title: "  测试版发布计划\n与定价  ", overview: [], decisions: [], actions: [], questions: [])
+        let valid = try summary.validated(against: [])
+        expect(valid.title == "测试版发布计划 与定价")
+        for title: String? in [nil, "", " \n\t", String(repeating: "长", count: 81)] {
+            summary.title = title
+            expectThrows { _ = try summary.validated(against: []) }
+        }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try MeetingStore(root: root)
+        var meeting = Meeting()
+        expect(meeting.title == Meeting.defaultTitle(at: meeting.createdAt))
+        expect(meeting.titleSource == .automatic)
+        meeting.summary = .init(overview: [], decisions: [], actions: [], questions: [])
+        var legacy = try require(JSONSerialization.jsonObject(with: JSONEncoder().encode(meeting)) as? [String: Any])
+        legacy.removeValue(forKey: "titleSource")
+        var migrated = try JSONDecoder().decode(Meeting.self, from: JSONSerialization.data(withJSONObject: legacy))
+        expect(migrated.titleSource == nil && migrated.summary?.title == nil)
+        migrated.applySummary(valid)
+        try store.save(migrated)
+        let reloaded = try store.load(migrated.id)
+        expect(reloaded.title == valid.title && reloaded.titleSource == .automatic)
+        expect(reloaded.summary?.title == valid.title && reloaded.state == "complete")
+        expect(reloaded.markdown().hasPrefix("# 测试版发布计划 与定价\n"))
+        legacy["title"] = "会议 2026 年产品规划"
+        var customLegacy = try JSONDecoder().decode(Meeting.self, from: JSONSerialization.data(withJSONObject: legacy))
+        customLegacy.applySummary(valid)
+        expect(customLegacy.title == "会议 2026 年产品规划")
+        var manual = Meeting(title: Meeting.defaultTitle(at: Date()))
+        let manualTitle = manual.title
+        manual.applySummary(valid)
+        expect(manual.title == manualTitle && manual.titleSource == .manual)
     }
     func testResponseRejectsTruncatedOutputAndExtractsOnlyText() throws {
         expectThrows { _ = try OpenAIClient.responseText(Data("{\"status\":\"incomplete\",\"output\":[]}".utf8)) }
@@ -275,7 +309,12 @@ struct APIContractTests {
             }
             expect(lines.count == 1); expect(lines.first?["id"] == "speech")
             expect(lines.first?["text"] == "Hello")
-            let summary = "{\"overview\":[{\"text\":\"Greeting\",\"evidence\":[\"speech\"]}],\"decisions\":[],\"actions\":[],\"questions\":[]}"
+            let format = try require((json["text"] as? [String: Any])?["format"] as? [String: Any])
+            let schema = try require(format["schema"] as? [String: Any])
+            let properties = try require(schema["properties"] as? [String: Any])
+            expect((schema["required"] as? [String])?.contains("title") == true)
+            expect((properties["title"] as? [String: Any])?["type"] as? String == "string")
+            let summary = "{\"title\":\"团队问候\",\"overview\":[{\"text\":\"Greeting\",\"evidence\":[\"speech\"]}],\"decisions\":[],\"actions\":[],\"questions\":[]}"
             return (200, try JSONSerialization.data(withJSONObject: ["status": "completed", "output": [["content": [["type": "output_text", "text": summary]]]]]))
         }
         let client = OpenAIClient(key: "test-key", session: URLSession(configuration: config))
@@ -296,6 +335,7 @@ struct APIContractTests {
         let speech = TranscriptSegment(id: "speech", source: .system, start: 1, end: 2, text: "Hello", isFinal: true)
         let result = try await client.summarize([blank, speech], language: "zh")
         expect(result.overview.first?.evidence == ["speech"]); expect(requests == 1)
+        expect(result.title == "团队问候")
     }
     func testOversizedFirstSegmentDoesNotCreateAnEmptySummaryBatch() async throws {
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [MockProtocol.self]
@@ -306,11 +346,31 @@ struct APIContractTests {
             let json = try requestJSON(request)
             let input = try require(json["input"] as? String)
             expect(!input.isEmpty)
-            let summary = "{\"overview\":[],\"decisions\":[],\"actions\":[],\"questions\":[]}"
+            let summary = "{\"title\":\"长篇讨论\",\"overview\":[],\"decisions\":[],\"actions\":[],\"questions\":[]}"
             return (200, try JSONSerialization.data(withJSONObject: ["status": "completed", "output": [["content": [["type": "output_text", "text": summary]]]]]))
         }
         _ = try await OpenAIClient(key: "test-key", session: URLSession(configuration: config)).summarize([speech], language: "zh")
         expect(requests == 1)
+    }
+    func testLongMeetingUsesConsolidatedTitle() async throws {
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [MockProtocol.self]
+        let segments = (0..<2).map { TranscriptSegment(id: "part-\($0)", source: .system,
+            start: Double($0 * 100), end: Double(($0 + 1) * 100), text: String(repeating: "a", count: 30000)) }
+        var requests = 0
+        MockProtocol.handler = { request in
+            requests += 1
+            if requests == 3 {
+                let input = try require(requestJSON(request)["input"] as? String)
+                expect(input.contains("Part 1") && input.contains("Part 2"))
+            }
+            let summary = MeetingSummary(title: requests < 3 ? "Part \(requests)" : "Whole meeting topic",
+                                         overview: [], decisions: [], actions: [], questions: [])
+            let result = String(decoding: try JSONEncoder().encode(summary), as: UTF8.self)
+            return (200, try JSONSerialization.data(withJSONObject: ["status": "completed", "output": [["content": [["type": "output_text", "text": result]]]]]))
+        }
+        let result = try await OpenAIClient(key: "test-key", session: URLSession(configuration: config)).summarize(segments, language: "en")
+        expect(result.title == "Whole meeting topic")
+        expect(requests == 3)
     }
     func testRequestUsesUserKeyAndOfficialEndpoint() async throws {
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [MockProtocol.self]
@@ -367,6 +427,7 @@ func recordFailure(_ message: String) { failures.append(message) }
             try core.testCrashRecoveryRepairsWAVAndPreservesMetadata()
             try core.testDeleteRemovesOnlyTheChosenMeetingAndAllItsFiles()
             try core.testSummaryRejectsMissingOrInventedEvidence()
+            try core.testSummaryTitlesAndLegacyMeetingNames()
             try core.testResponseRejectsTruncatedOutputAndExtractsOnlyText()
             try core.testPreferencesNeverSerializeAPIKey()
             core.testExportRetainsTranslationAndEvidence()
@@ -374,6 +435,7 @@ func recordFailure(_ message: String) { failures.append(message) }
             let api = APIContractTests()
             try await api.testSummarySkipsBlankSegmentsAndRejectsEmptyMeetingsLocally()
             try await api.testOversizedFirstSegmentDoesNotCreateAnEmptySummaryBatch()
+            try await api.testLongMeetingUsesConsolidatedTitle()
             try await api.testRequestUsesUserKeyAndOfficialEndpoint()
             await api.testServerErrorCannotEchoCredential()
         } catch { failures.append(error.localizedDescription) }

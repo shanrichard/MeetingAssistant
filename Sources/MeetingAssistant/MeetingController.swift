@@ -162,8 +162,7 @@ import MeetingCore
             }
             let allowed = await AVCaptureDevice.requestAccess(for: .audio)
             guard allowed else { throw MeetingError.message("请在系统设置 → 隐私与安全性 → 麦克风中允许 MeetingAssistant。") }
-            let meeting = Meeting(title: "会议 \(Date().formatted(date: .abbreviated, time: .shortened))",
-                                  subtitleLanguage: preferences.subtitleLanguage, outgoingLanguage: preferences.outgoingLanguage)
+            let meeting = Meeting(subtitleLanguage: preferences.subtitleLanguage, outgoingLanguage: preferences.outgoingLanguage)
             try store.save(meeting)
             createdMeetingID = meeting.id
             meetings.insert(meeting, at: 0); selectedID = meeting.id; activeID = meeting.id
@@ -393,15 +392,17 @@ import MeetingCore
         processing = true
         defer { processing = false }
         do {
-            var meeting = meetings[index]
+            let meeting = meetings[index]
             guard meeting.liveSegments.contains(where: \.hasText) else {
                 throw MeetingError.message("没有可总结的实时原文。录音已保存在本地。")
             }
             let (_, client) = try makeClient()
             status = "正在根据\(meeting.defaultTranscriptSource.title)生成总结…"
-            meeting.summary = try await client.summarize(meeting)
-            meeting.state = "complete"
-            try store.save(meeting); replace(meeting)
+            let summary = try await client.summarize(meeting)
+            // A manual rename may arrive while the request is in flight.
+            guard var updated = meetings.first(where: { $0.id == id }) else { return }
+            updated.applySummary(summary)
+            try store.save(updated); replace(updated)
             status = "会议总结已更新"
         } catch {
             if error is CredentialError { keyStatus = error.localizedDescription; needsKeySetup = true }
@@ -424,8 +425,11 @@ import MeetingCore
         }
     }
     func renameMeeting(_ text: String) {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let id = selectedID, let i = meetings.firstIndex(where: { $0.id == id }), !text.isEmpty else { return }
-        meetings[i].title = text; do { try store.save(meetings[i]) } catch { self.error = error.localizedDescription }
+        var meeting = meetings[i]
+        meeting.title = text; meeting.titleSource = .manual
+        do { try store.save(meeting); replace(meeting) } catch { self.error = error.localizedDescription }
     }
     func revealInFinder(_ id: UUID) {
         NSWorkspace.shared.activateFileViewerSelecting([store.folder(id)])
