@@ -19,11 +19,12 @@
 
 A native SwiftUI app that captures your microphone and system audio, shows live captions with translations, and turns the saved transcript into a summary with references. Bring your own OpenAI API key; no developer-hosted backend is required.
 
-> **Project status:** prototype, source version **0.1.15 (17)**. Offline checks pass, while fresh-machine installation and real remote-listener acceptance remain work in progress. The app interface is currently primarily Simplified Chinese; this README is available in both languages.
+> **Project status:** prototype, source version **0.1.16 (18)**. Offline checks pass, while fresh-machine installation and real remote-listener acceptance remain work in progress. The app interface is currently primarily Simplified Chinese; this README is available in both languages.
 
 ## Features
 
 - **Live bilingual captions** — original speech and translation together, with automatic scrolling you can pause to review earlier text.
+- **See-through floating captions** — during a meeting, captions float above Zoom, Meet, or Teams (including full screen) on an adjustable translucent background, so faces and shared screens stay visible. Drag, resize, or turn on click-through so clicks reach the meeting window.
 - **Two audio sources** — microphone and system audio are recorded separately on a shared timeline.
 - **Translated speech** — send AI-generated speech to a meeting through a virtual audio device, with automatic system-input switching and restoration.
 - **Transcript-based summaries** — summarize the live text already received, with references back to the transcript. Failed summaries preserve existing notes and source text.
@@ -64,7 +65,8 @@ If the compiler reports an incompatible SDK, select a matching Xcode/Command Lin
 1. Open Settings, enter your OpenAI API key, choose **Save**, then verify the connection.
 2. Select a physical microphone, the caption/summary language, and the language you want to speak to others.
 3. Start a meeting and grant the requested microphone and system-audio permissions. Headphones are recommended.
-4. End the meeting to save the live transcript and recordings, then generate a summary from the transcript. You can retry a failed summary later.
+4. Floating captions appear above your meeting window. Hover to show controls for pause, translated speech, font size, background opacity, and click-through. Move the pointer onto the lock in the top-right corner to turn click-through off. **⇧⌘T** shows or hides the captions; defaults are under **Settings → 悬浮字幕**.
+5. End the meeting to save the live transcript and recordings, then generate a summary from the transcript. You can retry a failed summary later.
 
 ## Send translated speech
 
@@ -72,7 +74,7 @@ The app detects an existing BlackHole 2ch device. If it is missing, the setup fl
 
 1. Select the virtual device as the app's translated-audio output.
 2. Configure the meeting app to follow the **system default microphone**. A fixed device selection will not follow automatic switching.
-3. Open **同传声音 → 试听并选择声音…** in Settings to preview all 13 voices (default Marin). Each has a bundled GPT-Live bilingual clip: no network, API key, or API charge is needed to listen. Previewing does not change your selection; click **选用** to save it. Then enable **Send my translated speech**. Your choice is saved and stays fixed while sending; stop sending before changing it. Meeting Assistant keeps capturing the physical microphone while switching the system input to the virtual device.
+3. Open the **同传声音** tab in Settings to preview all 13 voices (default Marin). Each has a bundled GPT-Live bilingual clip: no network, API key, or API charge is needed to listen. Previewing does not change your selection; click **选用** to save it. Then enable **Send my translated speech**. Your choice is saved and stays fixed while sending; stop sending before changing it. Meeting Assistant keeps capturing the physical microphone while switching the system input to the virtual device.
 4. Ask another participant to confirm what they hear. Stopping, pausing, ending, or quitting normally restores the original input; a later launch attempts recovery after an abnormal exit.
 
 Previews play through your current physical headphones or speakers. Recording disables previews; switching clips or closing the picker stops playback.

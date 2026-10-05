@@ -1,16 +1,12 @@
 import SwiftUI
 import MeetingCore
 
-let accent = Color(red: 0.1, green: 0.48, blue: 0.43)
-
 struct ContentView: View {
     @ObservedObject var controller: MeetingController
     @ObservedObject private var audioSetup: BlackHoleSetup
-    @State private var tab = "transcript"
-    @State private var search = ""
-    @State private var evidenceID: String?
-    @State private var transcriptSource: TranscriptSource?
-    @State private var editingTitle = false
+    @Environment(\.openWindow) private var openWindow
+    @State private var librarySearch = ""
+    @State private var renaming = false
     @State private var titleDraft = ""
     @State private var pendingDeletion: Meeting?
     init(controller: MeetingController) {
@@ -19,65 +15,25 @@ struct ContentView: View {
     }
     var body: some View {
         NavigationSplitView {
-            VStack(alignment: .leading, spacing: 20) {
-                HStack(spacing: 10) {
-                    Image(systemName: "waveform.circle.fill").font(.system(size: 32)).foregroundStyle(accent)
-                    VStack(alignment: .leading, spacing: 2) { Text("Meeting Assistant").font(.headline); Text("会议助手").font(.caption).foregroundStyle(.secondary) }
-                }.padding(.top, 18)
-                Button { Task { await controller.startMeeting() } } label: {
-                    Label(controller.starting ? "正在准备…" : "开始新会议", systemImage: "plus").frame(maxWidth: .infinity).padding(.vertical, 5)
-                }.buttonStyle(.borderedProminent).tint(accent).disabled(controller.busy || audioSetup.working)
-                Text("会议记录").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                List(selection: $controller.selectedID) {
-                    ForEach(controller.meetings) { meeting in
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(meeting.title).font(.system(size: 13, weight: .medium)).lineLimit(2)
-                            HStack {
-                                Text(meeting.createdAt.formatted(date: .abbreviated, time: .omitted))
-                                Spacer(); Text(meeting.state == "complete" ? timestamp(meeting.duration) : stateName(meeting.state))
-                            }.font(.caption2).foregroundStyle(.secondary)
-                        }.padding(.vertical, 8).tag(meeting.id)
-                            .contextMenu {
-                                Button("删除会议…", role: .destructive) { pendingDeletion = meeting }
-                                    .disabled(controller.busy)
-                            }
-                    }
-                }.listStyle(.sidebar).padding(.horizontal, -12).disabled(controller.busy)
-                Spacer(minLength: 0)
-                HStack {
-                    SettingsLink { Label("设置", systemImage: "gearshape") }
-                    Spacer()
-                    Circle().fill(controller.hasKey ? accent : .orange).frame(width: 6, height: 6)
-                    Text(controller.hasSavedKey ? "Key 已保存" : "请设置 Key").font(.caption2).foregroundStyle(.secondary)
-                }.padding(.bottom, 12)
-            }.padding(.horizontal, 20)
-            .navigationSplitViewColumnWidth(min: 230, ideal: 250, max: 290)
+            MeetingSidebar(controller: controller, search: $librarySearch, rename: rename, delete: { pendingDeletion = $0 })
+                .navigationSplitViewColumnWidth(min: 240, ideal: 270, max: 340)
         } detail: {
-            VStack(spacing: 0) {
-                header
-                if controller.recording { recordingBar }
-                if controller.processing || controller.starting {
-                    HStack { ProgressView().controlSize(.small); Text(controller.status).font(.callout); Spacer() }
-                        .padding(16).background(accent.opacity(0.06))
-                }
-                Divider()
-                if let meeting = controller.current {
-                    meetingBody(meeting)
-                } else { welcome }
-            }.background(Color(nsColor: .textBackgroundColor))
+            if let meeting = controller.current {
+                MeetingDetailView(controller: controller, meeting: meeting,
+                                  rename: { rename(meeting) }, delete: { pendingDeletion = meeting })
+            } else {
+                WelcomeView(controller: controller)
+            }
         }
+        .navigationTitle(controller.current?.title ?? "Meeting Assistant")
+        .modifier(HiddenToolbarTitle())
         .tint(accent)
         .sheet(isPresented: $audioSetup.presented) { BlackHoleSetupView(setup: audioSetup) }
-        .sheet(isPresented: $controller.needsKeySetup) {
-            VStack(spacing: 0) {
-                HStack { Text("设置 API Key").font(.headline); Spacer(); Button("完成") { controller.needsKeySetup = false } }.padding(20)
-                SettingsView(controller: controller)
-            }.frame(width: 630, height: 690)
-        }
+        .sheet(isPresented: $controller.needsKeySetup) { APIKeySetupSheet(controller: controller) }
         .alert("需要注意", isPresented: Binding(get: { controller.error != nil }, set: { if !$0 { controller.error = nil } })) {
             Button("知道了") { controller.error = nil }
         } message: { Text(controller.error ?? "") }
-        .alert("修改会议名称", isPresented: $editingTitle) {
+        .alert("重命名会议", isPresented: $renaming) {
             TextField("会议名称", text: $titleDraft)
             Button("保存") { controller.renameMeeting(titleDraft) }; Button("取消", role: .cancel) {}
         }
@@ -88,197 +44,255 @@ struct ContentView: View {
         } message: { meeting in
             Text("将永久删除“\(meeting.title)”的本地录音、转写全文、译文和总结。此操作无法撤销，已导出的文件不受影响。")
         }
+        .onAppear { controller.captionOverlay.showMainWindow = { openWindow(id: "main") } }
     }
-    private var header: some View {
-        HStack(alignment: .center) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(controller.current?.title ?? "你的会议工作台").font(.system(size: 18, weight: .semibold))
-                Text(controller.recording ? "\(timestamp(controller.elapsed)) · \(controller.status)" : "字幕 · 翻译 · 会议全文")
-                    .font(.callout).foregroundStyle(.secondary)
-            }
-            Spacer()
-            if controller.current != nil, !controller.busy {
-                Button { titleDraft = controller.current?.title ?? ""; editingTitle = true } label: { Image(systemName: "pencil") }.help("修改会议名称")
-                Button { controller.export() } label: { Label("导出", systemImage: "square.and.arrow.up") }
-                Button(role: .destructive) { pendingDeletion = controller.current } label: { Label("删除", systemImage: "trash") }
-                    .help("删除这场会议及其本地录音")
-            }
-            if controller.recording {
-                Button(controller.paused ? "继续记录" : "暂停") { controller.togglePause() }
-                Button("结束会议") { Task { await controller.finishMeeting() } }.buttonStyle(.borderedProminent).tint(.red)
-            }
-        }.padding(.horizontal, 20).padding(.vertical, 14)
+    private func rename(_ meeting: Meeting) {
+        // Renaming acts on the selection, so a context-menu rename selects its row first.
+        controller.selectedID = meeting.id
+        titleDraft = meeting.title; renaming = true
     }
-    private var recordingBar: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 16) {
-                AudioLevelView(levels: controller.audioLevels, source: .microphone, detail: controller.micState)
-                AudioLevelView(levels: controller.audioLevels, source: .system, detail: controller.systemState)
-                Spacer()
-                Button { controller.toggleVoice() } label: {
-                    Label(controller.voiceNeedsRouteRestore ? "恢复原麦克风" : (controller.sendingVoice ? "停止发送译音" : "发送我的译音"),
-                          systemImage: controller.voiceNeedsRouteRestore ? "mic.fill" : (controller.sendingVoice ? "stop.circle.fill" : "waveform"))
-                }.disabled(controller.paused)
-            }
-            HStack {
-                Text(controller.voiceState).font(.caption).foregroundStyle(controller.sendingVoice ? accent : .secondary)
-                Spacer()
-                Text("建议佩戴耳机 · 会议软件的静音与本助手独立").font(.caption).foregroundStyle(.secondary)
-            }
-            Text(controller.voiceRouteState).font(.caption).foregroundStyle(.secondary)
-        }.padding(.horizontal, 20).padding(.vertical, 10).background(accent.opacity(0.06))
+}
+
+/// The meeting title already leads the detail pane; keep it out of the toolbar where supported.
+private struct HiddenToolbarTitle: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 15.0, *) { content.toolbar(removing: .title) } else { content }
     }
-    private var welcome: some View {
-        VStack(alignment: .leading, spacing: 26) {
-            Spacer()
-            Image(systemName: "waveform.badge.mic").font(.system(size: 48, weight: .light)).foregroundStyle(accent)
-            Text("开始一场会议").font(.system(size: 32, weight: .semibold))
-            Text("在 Meet、Zoom 或 Teams 中正常开会。\n这里记录你的发言和电脑声音，实时显示字幕与翻译。")
-                .font(.title3).foregroundStyle(.secondary).lineSpacing(6)
-            HStack(alignment: .top, spacing: 30) {
-                feature("01", "设置自己的 Key", "填写并保存，随时可更换")
-                feature("02", "实时记录", "原文与译文并排保留")
-                feature("03", "会议总结", "从实时原文提炼总结和待办")
-            }.padding(.vertical, 12)
-            HStack {
-                if !controller.hasKey { SettingsLink { Label("打开设置", systemImage: "gearshape") }.buttonStyle(.borderedProminent) }
-                else { Button("开始新会议") { Task { await controller.startMeeting() } }.buttonStyle(.borderedProminent) }
-                Text("点击开始后，音频将发送至 OpenAI，使用你的 API 额度。")
-                    .font(.caption).foregroundStyle(.secondary)
+}
+
+struct SearchField: View {
+    @Binding var text: String
+    let prompt: String
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField(prompt, text: $text).textFieldStyle(.plain)
+            if !text.isEmpty {
+                Button { text = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary) }
+                    .buttonStyle(.plain).accessibilityLabel("清除搜索")
             }
-            Spacer()
-            Text("录音与会议记录保存在这台 Mac · 你可以随时暂停或结束").font(.caption).foregroundStyle(.secondary)
-        }.padding(48).frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .font(.system(size: 12))
+        .padding(.horizontal, 8).padding(.vertical, 5)
+        .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
-    private func feature(_ number: String, _ title: String, _ text: String) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(number).font(.caption.monospaced()).foregroundStyle(accent)
-            Text(title).font(.headline); Text(text).font(.caption).foregroundStyle(.secondary)
-        }.frame(maxWidth: .infinity, alignment: .leading)
+}
+
+private struct LibraryGroup: Identifiable {
+    let title: String
+    var meetings: [Meeting]
+    var id: String { title }
+    var showsDate: Bool { title != "今天" && title != "昨天" }
+}
+
+private struct MeetingSidebar: View {
+    @ObservedObject var controller: MeetingController
+    @ObservedObject private var audioSetup: BlackHoleSetup
+    @Binding var search: String
+    let rename: (Meeting) -> Void
+    let delete: (Meeting) -> Void
+    init(controller: MeetingController, search: Binding<String>, rename: @escaping (Meeting) -> Void, delete: @escaping (Meeting) -> Void) {
+        self.controller = controller; audioSetup = controller.audioSetup
+        _search = search; self.rename = rename; self.delete = delete
     }
-    private func meetingBody(_ meeting: Meeting) -> some View {
+
+    var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Picker("内容", selection: $tab) { Text("对话全文").tag("transcript"); Text("会议总结").tag("summary") }
-                    .pickerStyle(.segmented).frame(width: 230)
+            VStack(spacing: 10) {
+                primaryAction
+                SearchField(text: $search, prompt: "搜索会议或发言")
+            }.padding(.horizontal, 12).padding(.top, 6).padding(.bottom, 4)
+            List(selection: $controller.selectedID) {
+                ForEach(groups) { group in
+                    Section(group.title) {
+                        ForEach(group.meetings) { meeting in
+                            MeetingRow(meeting: meeting, showsDate: group.showsDate).tag(meeting.id)
+                                .contextMenu { menu(for: meeting) }
+                        }
+                    }
+                }
+            }
+            .listStyle(.sidebar)
+            .disabled(controller.busy)
+            .overlay { if groups.isEmpty { emptyState } }
+            Divider()
+            footer
+        }
+    }
+
+    private var groups: [LibraryGroup] {
+        let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        let matches = query.isEmpty ? controller.meetings : controller.meetings.filter { Self.matches($0, query) }
+        var result: [LibraryGroup] = []
+        for meeting in matches {
+            let title = librarySection(for: meeting.createdAt)
+            if result.last?.title == title { result[result.count - 1].meetings.append(meeting) }
+            else { result.append(LibraryGroup(title: title, meetings: [meeting])) }
+        }
+        return result
+    }
+    private static func matches(_ meeting: Meeting, _ query: String) -> Bool {
+        meeting.title.localizedCaseInsensitiveContains(query) || meeting.liveSegments.contains {
+            $0.text.localizedCaseInsensitiveContains(query) || ($0.translation ?? "").localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    @ViewBuilder private var primaryAction: some View {
+        if controller.recording {
+            HStack(spacing: 10) {
+                RecordingDot(paused: controller.paused, elapsed: controller.elapsed, size: 10)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(controller.paused ? "会议已暂停" : "会议进行中").font(.system(size: 12, weight: .semibold))
+                    Text(timestamp(controller.elapsed)).font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary)
+                }
                 Spacer()
-                if !controller.busy {
-                    Button(meeting.summary == nil ? "生成总结" : "更新总结") { Task { await controller.updateSummary() } }
-                        .disabled(!meeting.displayedSegments.contains(where: \.hasText))
-                }
-                TextField("搜索发言", text: $search).textFieldStyle(.roundedBorder).frame(width: 190)
-            }.padding(.horizontal, 20).padding(.vertical, 10)
-            if tab == "summary" { summaryView(meeting) } else {
-                if !controller.recording, !meeting.finalSegments.isEmpty {
-                    HStack {
-                        Picker("记录来源", selection: Binding(get: { transcriptSource ?? meeting.defaultTranscriptSource }, set: { transcriptSource = $0; evidenceID = nil })) {
-                            Text("实时原文（\(meeting.liveSegments.count) 段）").tag(TranscriptSource.live)
-                            Text("历史转写（\(meeting.finalSegments.count) 段）").tag(TranscriptSource.recording)
-                        }.pickerStyle(.segmented).frame(width: 320)
-                        Text("总结仅使用实时原文。历史转写独立保留。")
-                            .font(.caption).foregroundStyle(.secondary)
-                        Spacer()
-                    }.padding(.horizontal, 20).padding(.bottom, 8)
-                }
-                TranscriptTimeline(segments: meeting.segments(from: transcriptSource ?? meeting.defaultTranscriptSource), meeting: meeting,
-                    title: controller.recording ? "实时字幕 · \(AppPreferences.languageName(meeting.subtitleLanguage))" : nil,
-                    isLive: controller.recording, search: search, evidenceID: evidenceID,
-                    notices: meeting.notices,
-                    status: AudioSource.allCases.compactMap { source in controller.translationStates[source].map { "\(source.title)：\($0)" } }.joined(separator: " · ")).id(meeting.id)
             }
-        }.onChange(of: meeting.id) { _, _ in transcriptSource = nil; evidenceID = nil; search = "" }
+            .padding(.horizontal, 12).padding(.vertical, 9)
+            .background(Color.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        } else {
+            Button { Task { await controller.startMeeting() } } label: {
+                HStack(spacing: 8) {
+                    if controller.starting { ProgressView().controlSize(.small) } else { Image(systemName: "record.circle") }
+                    Text(controller.starting ? "正在准备…" : "开始会议").fontWeight(.semibold)
+                    Spacer()
+                    Text("⌘N").font(.system(size: 11)).opacity(0.7)
+                }
+                .frame(maxWidth: .infinity).padding(.vertical, 3)
+            }
+            .buttonStyle(.borderedProminent).controlSize(.large)
+            .disabled(controller.busy || audioSetup.working)
+        }
     }
-    private func summaryView(_ meeting: Meeting) -> some View {
-        ScrollView {
-            if let summary = meeting.summary {
-                VStack(alignment: .leading, spacing: 24) {
-                    if meeting.summaryUsesDifferentTranscript {
-                        Label(meeting.liveSegments.contains(where: \.hasText) ? "这份历史总结引用了旧版转写。更新总结将仅使用实时原文。" : "这份历史总结引用了旧版转写。本场没有可用于重新总结的实时原文。", systemImage: "info.circle")
-                            .font(.callout).foregroundStyle(.secondary)
-                    }
-                    summarySection("会议概要", icon: "text.alignleft", points: summary.overview)
-                    summarySection("已作出的决策", icon: "checkmark.circle", points: summary.decisions)
-                    summarySection("待办事项", icon: "checklist", points: summary.actions)
-                    summarySection("待确认的问题", icon: "questionmark.circle", points: summary.questions)
-                }.padding(30).frame(maxWidth: .infinity, alignment: .leading)
+
+    @ViewBuilder private func menu(for meeting: Meeting) -> some View {
+        Button("重命名…") { rename(meeting) }
+        Button("导出 Markdown…") { controller.selectedID = meeting.id; controller.export() }
+        Button("在 Finder 中显示") { controller.revealInFinder(meeting.id) }
+        Divider()
+        Button("删除会议…", role: .destructive) { delete(meeting) }.disabled(controller.busy)
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 6) {
+            Image(systemName: controller.meetings.isEmpty ? "tray" : "magnifyingglass").font(.title2).foregroundStyle(.tertiary)
+            Text(controller.meetings.isEmpty ? "还没有会议记录" : "没有匹配的会议").font(.callout).foregroundStyle(.secondary)
+        }
+    }
+
+    private var footer: some View {
+        HStack(spacing: 8) {
+            SettingsLink { Label("设置", systemImage: "gearshape") }.buttonStyle(.borderless)
+            Spacer()
+            if controller.hasKey {
+                Label { Text("Key 已保存") } icon: { Image(systemName: "checkmark.circle.fill").foregroundStyle(.green) }
+                    .foregroundStyle(.secondary)
             } else {
-                ContentUnavailableView(meeting.liveSegments.contains(where: \.hasText) ? "尚未生成会议总结" : "没有可总结的实时原文", systemImage: "text.badge.checkmark", description: Text(meeting.liveSegments.contains(where: \.hasText) ? "点击生成总结，直接使用已有实时原文。每条总结附有原文引用。" : "本场录音仍保存在本机。"))
-                    .padding(.top, 100)
+                SettingsDestinationLink(tab: "general") { Label("未设置 API Key", systemImage: "exclamationmark.triangle.fill") }
+                    .buttonStyle(.borderless).foregroundStyle(.orange)
             }
         }
+        .font(.caption)
+        .padding(.horizontal, 14).padding(.vertical, 10)
     }
-    private func summarySection(_ title: String, icon: String, points: [SummaryPoint]) -> some View {
-        VStack(alignment: .leading, spacing: 15) {
-            Label(title, systemImage: icon).font(.title3.weight(.semibold)).foregroundStyle(accent)
-            if points.isEmpty { Text("未记录明确内容").foregroundStyle(.secondary).font(.callout) }
-            ForEach(points) { point in
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(point.text).textSelection(.enabled).lineSpacing(4)
-                    HStack { ForEach(point.evidence, id: \.self) { id in
-                        Button("查看原文") { search = ""; tab = "transcript"; evidenceID = nil
-                            transcriptSource = controller.current?.transcriptSource(forEvidence: id)
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { evidenceID = id }
-                        }.buttonStyle(.link).font(.caption)
-                    } }
+}
+
+private struct MeetingRow: View {
+    let meeting: Meeting
+    let showsDate: Bool
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(meeting.title).font(.system(size: 13, weight: .medium)).lineLimit(2)
+            HStack(spacing: 5) {
+                Text(showsDate ? meeting.createdAt.formatted(.dateTime.month(.abbreviated).day().hour().minute())
+                               : meeting.createdAt.formatted(date: .omitted, time: .shortened))
+                let duration = durationText(meeting.duration)
+                if !duration.isEmpty { Text("·"); Text(duration) }
+                Spacer(minLength: 4)
+                StateBadge(state: meeting.state)
+            }
+            .font(.system(size: 11)).foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 3)
+    }
+}
+
+private struct WelcomeView: View {
+    @ObservedObject var controller: MeetingController
+    @ObservedObject private var audioSetup: BlackHoleSetup
+    init(controller: MeetingController) {
+        self.controller = controller
+        audioSetup = controller.audioSetup
+    }
+    private var microphone: AudioDevice? { controller.microphones.first { $0.uid == controller.preferences.microphoneUID } }
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 28) {
+                VStack(spacing: 12) {
+                    Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 84, height: 84)
+                    Text("开始一场会议").font(.system(size: 28, weight: .semibold))
+                    Text("在 Zoom、Meet 或 Teams 中照常开会。\n这里实时显示字幕与翻译，结束后生成带原文引用的总结。")
+                        .multilineTextAlignment(.center).foregroundStyle(.secondary).lineSpacing(4)
                 }
-            }
-        }
-    }
-    private func stateName(_ state: String) -> String {
-        ["recording": "录制中", "paused": "已暂停", "processing": "总结中", "recorded": "待总结", "interrupted": "待总结"][state] ?? state
-    }
-}
-
-private struct AudioLevelView: View {
-    @ObservedObject var levels: AudioLevels
-    let source: AudioSource
-    let detail: String
-    private var level: Double { source == .microphone ? levels.microphone : levels.system }
-    var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack {
-                Image(systemName: source == .microphone ? "mic" : "speaker.wave.2")
-                Text(source == .microphone ? "麦克风" : "系统声音").fontWeight(.medium)
-                Capsule().fill(.quaternary)
-                    .overlay(alignment: .leading) { Capsule().fill(accent).frame(width: 65 * min(1, max(0, level))) }
-                    .frame(width: 65, height: 5)
-                    .accessibilityLabel("音量").accessibilityValue("\(Int(min(1, max(0, level)) * 100))%")
-            }.font(.caption)
-            Text(detail).font(.caption2).foregroundStyle(.secondary).lineLimit(1).help(detail)
-        }.frame(maxWidth: 230, alignment: .leading)
-    }
-}
-
-struct TranscriptCard: View {
-    let segment: TranscriptSegment
-    let speaker: String
-    var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(speaker)
-                Text(timestamp(segment.start)).font(.system(size: 10).monospacedDigit()).foregroundStyle(.secondary)
-            }.font(.system(size: 10)).foregroundStyle(.tertiary)
-                .frame(width: 60, alignment: .leading)
-            VStack(alignment: .leading, spacing: 4) {
-                if segment.source == .microphone {
-                    Text(segment.text).font(.system(size: 13)).foregroundStyle(.secondary).lineSpacing(2).textSelection(.enabled)
-                } else {
-                    Text(segment.translation ?? segment.text)
-                        .font(.system(size: segment.translation != nil ? 19 : 14, weight: .medium))
-                        .foregroundStyle(.primary).lineSpacing(3).textSelection(.enabled)
-                    if distinctTranslation != nil {
-                        Text(segment.text).font(.system(size: 12)).foregroundStyle(.secondary).lineSpacing(1).textSelection(.enabled)
+                VStack(spacing: 0) {
+                    SetupRow(done: controller.hasKey, icon: "key.fill", title: "OpenAI API Key",
+                             detail: controller.hasKey ? "已保存在这台 Mac 的钥匙串" : "使用你自己的 API 额度") {
+                        if !controller.hasKey { SettingsDestinationLink(tab: "general") { Text("设置") } }
+                    }
+                    Divider().padding(.leading, 54)
+                    SetupRow(done: microphone != nil, icon: "mic.fill", title: "麦克风",
+                             detail: microphone?.name ?? "请在设置中选择真实麦克风") {
+                        if microphone == nil { SettingsDestinationLink(tab: "audio") { Text("选择") } }
+                    }
+                    Divider().padding(.leading, 54)
+                    SetupRow(done: true, icon: "globe", title: "语言",
+                             detail: "字幕 \(AppPreferences.languageName(controller.preferences.subtitleLanguage)) · 对外 \(AppPreferences.languageName(controller.preferences.outgoingLanguage))") {
+                        SettingsDestinationLink(tab: "general") { Text("更改") }
+                    }
+                    Divider().padding(.leading, 54)
+                    SetupRow(done: audioSetup.ready, optional: true, icon: "waveform", title: "向会议发送译音（可选）",
+                             detail: audioSetup.ready ? audioSetup.status : "需要 BlackHole 2ch 虚拟音频设备") {
+                        if !audioSetup.ready { Button("设置…") { audioSetup.presented = true }.disabled(audioSetup.working) }
                     }
                 }
-            }.frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.primary.opacity(0.08)))
+                VStack(spacing: 10) {
+                    Button { Task { await controller.startMeeting() } } label: {
+                        Label("开始会议", systemImage: "record.circle").frame(minWidth: 180).padding(.vertical, 3)
+                    }
+                    .buttonStyle(.borderedProminent).controlSize(.large)
+                    .disabled(controller.busy || audioSetup.working)
+                    Text("开始后音频会发送至 OpenAI 生成实时字幕，使用你的 API 额度 · 录音与记录保存在这台 Mac")
+                        .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                }
             }
-        .padding(.horizontal, 10).padding(.vertical, 9).frame(maxWidth: .infinity, alignment: .leading)
-            .fixedSize(horizontal: false, vertical: true)
-            .overlay(alignment: .bottom) { Divider().opacity(0.2) }
+            .frame(maxWidth: 540).padding(40).frame(maxWidth: .infinity)
+        }
     }
-    private var distinctTranslation: String? {
-        guard let translation = segment.translation,
-              translation.trimmingCharacters(in: .whitespacesAndNewlines) != segment.text.trimmingCharacters(in: .whitespacesAndNewlines) else { return nil }
-        return translation
+}
+
+private struct SetupRow<Accessory: View>: View {
+    let done: Bool
+    var optional = false
+    let icon: String
+    let title: String
+    let detail: String
+    @ViewBuilder let accessory: () -> Accessory
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
+                .frame(width: 28, height: 28)
+                .background(done ? accent : Color.secondary.opacity(0.5), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.system(size: 13, weight: .medium))
+                Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            }
+            Spacer(minLength: 12)
+            accessory()
+            Image(systemName: done ? "checkmark.circle.fill" : (optional ? "circle.dashed" : "exclamationmark.circle.fill"))
+                .foregroundStyle(done ? Color.green : (optional ? Color.secondary : Color.orange))
+        }
+        .padding(.horizontal, 14).padding(.vertical, 11)
     }
 }

@@ -5,9 +5,10 @@ import AppKit
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @StateObject private var controller = MeetingController()
     var body: some Scene {
-        WindowGroup {
+        // One library window; the floating captions reopen it by this id.
+        Window("Meeting Assistant", id: "main") {
             ContentView(controller: controller)
-                .frame(minWidth: 1040, minHeight: 680)
+                .frame(minWidth: 980, minHeight: 640)
                 .onAppear { delegate.controller = controller; controller.audioSetup.start() }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
                     controller.audioSetup.refresh()
@@ -18,8 +19,19 @@ import AppKit
             CommandGroup(replacing: .newItem) {
                 Button("开始新会议") { Task { await controller.startMeeting() } }.keyboardShortcut("n").disabled(controller.busy)
             }
+            CommandMenu("会议") {
+                Button("显示或隐藏悬浮字幕") { controller.captionOverlay.toggle() }
+                    .keyboardShortcut("t", modifiers: [.command, .shift]).disabled(!controller.recording)
+                Button("切换鼠标穿透") {
+                    if controller.captionOverlay.visible { controller.captionOverlay.clickThrough.toggle() }
+                }
+                .keyboardShortcut("l", modifiers: [.command, .shift]).disabled(!controller.recording)
+                Divider()
+                Button(controller.paused ? "继续记录" : "暂停记录") { controller.togglePause() }.disabled(!controller.recording)
+                Button("结束会议") { Task { await controller.finishMeeting() } }.disabled(!controller.recording)
+            }
         }
-        Settings { SettingsView(controller: controller).frame(width: 610, height: 600) }
+        Settings { SettingsView(controller: controller).frame(width: 640, height: 620) }
     }
 }
 

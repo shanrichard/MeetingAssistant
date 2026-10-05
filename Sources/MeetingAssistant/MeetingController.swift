@@ -26,6 +26,7 @@ import MeetingCore
     @Published var elapsed = 0.0
     let audioLevels = AudioLevels()
     let audioSetup = BlackHoleSetup()
+    let captionOverlay = CaptionOverlay()
     var micLevel: Double { get { audioLevels.microphone } set { audioLevels.microphone = newValue } }
     var systemLevel: Double { get { audioLevels.system } set { audioLevels.system = newValue } }
     @Published var micState = "未连接"
@@ -56,6 +57,11 @@ import MeetingCore
     private var lastDiagnostics = Date.distantPast
     var storageURL: URL { store.root }
     var current: Meeting? { meetings.first { $0.id == selectedID } }
+    /// The meeting being captured, independent of the library selection.
+    var liveMeeting: Meeting? {
+        guard recording, let activeID else { return nil }
+        return meetings.first { $0.id == activeID }
+    }
     var busy: Bool { recording || processing || starting }
     var microphones: [AudioDevice] { devices.filter { $0.input && !$0.virtual && !$0.name.contains("MeetingAssistant") } }
     var virtualOutputs: [AudioDevice] { devices.filter { $0.input && $0.output && $0.virtual } }
@@ -76,6 +82,7 @@ import MeetingCore
         } catch { self.error = error.localizedDescription }
         audioSetup.configureDevices = { [weak self] devices in self?.configureDevices(devices) }
         audioSetup.meetingIsBusy = { [weak self] in self?.busy ?? true }
+        captionOverlay.attach(self)
         refreshDevices()
         // Avoid prompting for Keychain access at every launch; read only when the user initiates API work.
         hasSavedKey = UserDefaults.standard.bool(forKey: "hasSavedCredentialV2")
@@ -145,6 +152,7 @@ import MeetingCore
         guard !busy else { return }
         guard !audioSetup.working else { error = "音频组件正在准备安装，请完成或取消后再开始会议。"; return }
         starting = true; defer { starting = false }
+        status = "正在准备会议…"
         var createdMeetingID: UUID?
         do {
             let (key, client) = try makeClient()
@@ -178,6 +186,7 @@ import MeetingCore
             try await capture.start(folder: store.folder(meeting.id), microphone: microphone)
             recording = true; paused = false; elapsed = 0; status = "正在记录"
             for translator in translators.values { Task { await translator.start() } }
+            captionOverlay.meetingStarted()
             timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
                 Task { @MainActor in
                     guard let self else { return }
@@ -417,6 +426,9 @@ import MeetingCore
     func renameMeeting(_ text: String) {
         guard let id = selectedID, let i = meetings.firstIndex(where: { $0.id == id }), !text.isEmpty else { return }
         meetings[i].title = text; do { try store.save(meetings[i]) } catch { self.error = error.localizedDescription }
+    }
+    func revealInFinder(_ id: UUID) {
+        NSWorkspace.shared.activateFileViewerSelecting([store.folder(id)])
     }
     func export() {
         guard let meeting = current else { return }

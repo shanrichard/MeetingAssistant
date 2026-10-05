@@ -7,6 +7,10 @@ import MeetingCore
     let controller: MeetingController
     private let folder: URL
     init() {
+        if CommandLine.arguments.contains("--check-captions") {
+            do { try checkCaptionDisplay(); exit(0) }
+            catch { print("FAIL: \(error.localizedDescription)"); exit(1) }
+        }
         if CommandLine.arguments.contains("--check-audio-levels") {
             do { try checkAudioLevelIsolation(); exit(0) }
             catch { print("FAIL: \(error.localizedDescription)"); exit(1) }
@@ -29,23 +33,62 @@ import MeetingCore
         controller.micLevel = 0.35
         controller.systemLevel = 0.7
     }
+    static let dialogue: [(AudioSource, String, String)] = [
+        (.system, "Can everyone see my screen?", "大家能看到我的屏幕吗？"),
+        (.microphone, "可以看到，请继续。", "可以看到，请继续。"),
+        (.system, "Great. Let's start with the beta timeline.", "好的，我们先看测试版的时间表。"),
+        (.system, "We think we can ship the beta next Friday, if QA signs off by Wednesday.", "如果测试团队周三前确认，我们认为下周五可以发布测试版。"),
+        (.microphone, "周三之前我们可以完成回归测试。", "周三之前我们可以完成回归测试。"),
+        (.system, "Perfect. The other open item is pricing for the enterprise tier.", "很好。另一个待定事项是企业版的定价。"),
+        (.system, "Can your team share the usage numbers from last quarter?", "你们团队能分享一下上季度的使用数据吗？"),
+        (.microphone, "可以，我会后发给你。", "可以，我会后发给你。"),
+    ]
     func captions(complete: Bool = false) {
         show(complete ? "complete" : "recording")
         var meeting = controller.meetings[0]
-        let samples = [("Can you hear me?", "你能听到我吗？"), ("We will meet next Tuesday at ten.", "我们下周二上午十点开会。"), ("我可以听见了，可以。", "我可以听见了，可以。")]
         let segments: [TranscriptSegment] = (0..<32).map { index -> TranscriptSegment in
-            let sample = samples[index % 3]
-            let source: AudioSource = index % 3 == 2 ? .microphone : .system
-            let text = sample.0
-            let translation: String? = sample.1
-            return TranscriptSegment(id: "sample-\(index)", source: source,
-                start: Double(index * 4), end: Double(index * 4 + 3), text: text,
-                translation: translation, isFinal: true)
+            let sample = Self.dialogue[index % Self.dialogue.count]
+            return TranscriptSegment(id: "sample-\(index)", source: sample.0,
+                start: Double(index * 6), end: Double(index * 6 + 5), text: sample.1,
+                translation: sample.2, isFinal: true)
         }
         meeting.liveSegments = segments
-        if complete { meeting.finalSegments = segments }
+        if complete { meeting.finalSegments = segments; meeting.duration = 32 * 6 }
         controller.meetings = [meeting]
+        controller.elapsed = 32 * 6
         controller.translationStates = [.microphone: "实时同传已连接", .system: "实时同传已连接"]
+        controller.micState = "实时同传已连接"; controller.systemState = "实时同传已连接"
+    }
+    /// A library spanning several days, with the newest meeting summarized.
+    func library() {
+        captions(complete: true)
+        controller.recording = false
+        var latest = controller.meetings[0]
+        latest.title = "产品周会：测试版发布计划"
+        latest.subtitleLanguage = "zh"; latest.outgoingLanguage = "en"
+        latest.summary = MeetingSummary(
+            overview: [.init(text: "对齐测试版发布时间表与企业版定价两项议题；测试团队周三前确认后，下周五发布测试版。", evidence: ["sample-2", "sample-3"])],
+            decisions: [.init(text: "测试版目标发布日期定为下周五，前提是周三前完成回归测试。", evidence: ["sample-3", "sample-4"])],
+            actions: [.init(text: "我方在周三前完成回归测试并同步结果。", evidence: ["sample-4"]),
+                      .init(text: "会后发送上季度的使用数据，用于企业版定价。", evidence: ["sample-7"])],
+            questions: [.init(text: "企业版的定价区间尚未确定，需要使用数据后再讨论。", evidence: ["sample-5"])])
+        let calendar = Calendar.current, now = Date()
+        func meeting(_ title: String, daysAgo: Int, minutes: Double, state: String = "complete") -> Meeting {
+            var item = Meeting(title: title)
+            item.createdAt = calendar.date(byAdding: .day, value: -daysAgo, to: now)!.addingTimeInterval(-Double(daysAgo) * 3700)
+            item.duration = minutes * 60; item.state = state
+            return item
+        }
+        controller.meetings = [latest, meeting("设计评审：悬浮字幕", daysAgo: 0, minutes: 38),
+                               meeting("与 Acme 的合作沟通", daysAgo: 1, minutes: 52, state: "recorded"),
+                               meeting("Weekly sync with Berlin team", daysAgo: 3, minutes: 47),
+                               meeting("招聘面试 · 后端工程师", daysAgo: 12, minutes: 61),
+                               meeting("Q4 规划", daysAgo: 40, minutes: 95)]
+        controller.selectedID = latest.id
+    }
+    func welcome() {
+        show("complete")
+        controller.meetings = []; controller.selectedID = nil
     }
     func append(translation: Bool = false, grow: Bool = false) {
         guard !controller.meetings.isEmpty else { return }
@@ -83,7 +126,8 @@ import MeetingCore
                 BlackHolePreview()
             } else {
             VStack(spacing: 0) {
-                HStack {
+                // Snapshots show the window exactly as the app lays it out, without these test buttons.
+                if SnapshotRunner.folder == nil { HStack {
                     Text("离线回归：不录音、不联网").font(.caption)
                     Button("准备界面") { state.show("preparing") }
                     Button("录音界面") { state.show("recording") }
@@ -95,10 +139,14 @@ import MeetingCore
                     Button("同段增长") { state.append(grow: true) }
                     Button("追加译文") { state.append(translation: true) }
                     Button("会后全文") { state.captions(complete: true) }
+                    Button("会议列表") { state.library() }
+                    Button("欢迎页") { state.welcome() }
+                    Button("悬浮字幕") { state.controller.captionOverlay.toggle() }
                     Button("安装引导") { state.previewAudioSetup = true }
-                }.padding(10)
+                }.padding(10) }
                 ContentView(controller: state.controller)
-            }.frame(minWidth: 1100, minHeight: 760)
+            }.frame(minWidth: SnapshotRunner.folder == nil ? 1100 : 980, minHeight: SnapshotRunner.folder == nil ? 760 : 640)
+                .task { if let folder = SnapshotRunner.folder { await SnapshotRunner.run(state, to: folder) } }
                 .sheet(isPresented: $state.previewAudioSetup) { BlackHolePreview() }
             }
         }
