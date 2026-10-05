@@ -60,9 +60,11 @@ There are no third-party Swift package dependencies. The build script creates a 
 
 If the compiler reports an incompatible SDK, select a matching Xcode/Command Line Tools installation or set `SDKROOT` to an installed compatible SDK. The scripts use `--disable-sandbox` for SwiftPM's build-plugin sandbox; this does not disable macOS security settings.
 
+**Google Calendar (optional)**: calendar features use your organization's own Google OAuth desktop client; none ships with this repository. A GCP administrator enables the Google Calendar API in a project under the organization, sets the OAuth consent screen to Internal, creates a "Desktop app" client, and writes its `client_id` and `client_secret` to the untracked `Config/google-oauth-client.json` (or points `MEETING_GOOGLE_OAUTH_CLIENT` at the JSON downloaded from Google Cloud). `build-app.sh` injects it before signing; builds without the file hide calendar features.
+
 ### Start a meeting
 
-1. Open Settings, enter your OpenAI API key, choose **Save**, then verify the connection.
+1. Open Settings, enter your OpenAI API key, choose **Save**, then verify the connection. In an organization build, connect your work Google account from **Coming up** in the sidebar (or **Settings → Google Account**); the sidebar then lists the next 7 days of meetings, and meetings about to start appear at the top of the main window and start with the calendar event linked.
 2. Select a physical microphone, the caption/summary language, and the language you want to speak to others.
 3. Start a meeting and grant the requested microphone and system-audio permissions. Headphones are recommended.
 4. Floating captions appear above your meeting window. Hover to show controls for pause, translated speech, font size, background opacity, and click-through. Move the pointer onto the lock in the top-right corner to turn click-through off. **⇧⌘T** shows or hides the captions; defaults are under **Settings → 悬浮字幕**.
@@ -88,12 +90,15 @@ The meeting app's mute control remains separate. Let participants know that the 
 | Data | Handling |
 | --- | --- |
 | API key | Stored in macOS Keychain; used to authenticate directly with the official OpenAI API. Not written into meeting records or exports. |
+| Google authorization | Optional. Stored in macOS Keychain; used only to read your primary Google calendar directly. Not written into meeting records or exports. |
+| Calendar link | Linked records keep the event title, scheduled time, organizer and invitees locally as context, not as proof of attendance. |
+| Mail and briefs | Optional. With mail access, related threads (by invitees and meeting title) are read and sent with the invitation and earlier summaries to OpenAI to prepare pre-meeting briefs automatically; briefs are cached locally and deleted when Google is disconnected. Summaries compare against the brief. |
 | Live audio | Saved locally and sent to OpenAI during active captioning/translation. |
 | Saved recordings | Kept on your Mac; the post-meeting summary flow does not upload them for another transcription pass. |
 | Summary input | Only the saved live transcript is sent to OpenAI. Empty or missing live text does not trigger an audio-upload fallback. |
 | Markdown export | Text and time references; no audio files or credentials. |
 
-Meeting files are stored in `~/Library/Application Support/MeetingAssistant/Meetings/`. The app connects directly to OpenAI without a shared proxy or telemetry backend. Deleting a meeting removes its local records and recordings; previously exported files remain separate.
+Meeting files are stored in `~/Library/Application Support/MeetingAssistant/Meetings/`. The app connects directly to OpenAI (and Google Calendar when connected) without a shared proxy or telemetry backend. Deleting a meeting removes its local records and recordings; previously exported files remain separate.
 
 ## Development
 

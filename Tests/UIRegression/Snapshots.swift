@@ -29,8 +29,22 @@ import MeetingCore
                 state.library(); try await save(main, folder, "\(name)-summary")
                 state.captions(complete: true); try await save(main, folder, "\(name)-transcript")
                 state.captions(); try await save(main, folder, "\(name)-live")
+                state.calendarDue(); try await save(main, folder, "\(name)-calendar-due")
+                state.calendarDue(overlapping: true, linked: true); try await save(main, folder, "\(name)-calendar-overlap")
+                let chooser = window(StartChooserSheet(controller: state.controller), size: NSSize(width: 560, height: 330))
+                try await save(chooser, folder, "\(name)-calendar-chooser"); chooser.orderOut(nil)
+                state.calendarDue(week: true); try await save(main, folder, "\(name)-calendar-sidebar")
+                state.controller.calendarSelection = .event("weekly"); try await save(main, folder, "\(name)-calendar-event")
+                state.controller.calendarSelection = .event("standup"); try await save(main, folder, "\(name)-calendar-event-later")
+                state.controller.calendarSelection = nil
+                state.contextSummary(); try await save(main, folder, "\(name)-summary-context")
+                state.controller.calendarSelection = .agenda; try await save(main, folder, "\(name)-calendar-agenda")
+                state.controller.calendarSelection = nil
+                state.calendarRecording(); try await save(main, folder, "\(name)-calendar-recording")
+                state.calendarOffline(); try await save(main, folder, "\(name)-calendar-offline")
                 state.library()
-                for tab in ["general", "audio", "voice", "captions", "privacy"] {
+                state.controller.calendar.preview(account: "me@example.com", events: [])
+                for tab in ["general", "audio", "voice", "google", "captions", "privacy"] {
                     UserDefaults.standard.set(tab, forKey: SettingsView.tabKey)
                     try await save(settings, folder, "\(name)-settings-\(tab)")
                 }

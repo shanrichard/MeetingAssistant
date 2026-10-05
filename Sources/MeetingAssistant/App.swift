@@ -9,7 +9,7 @@ import AppKit
         Window("Meeting Assistant", id: "main") {
             ContentView(controller: controller)
                 .frame(minWidth: 980, minHeight: 640)
-                .onAppear { delegate.controller = controller; controller.audioSetup.start() }
+                .onAppear { delegate.controller = controller; controller.audioSetup.start(); controller.calendar.start() }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
                     controller.audioSetup.refresh()
                 }
@@ -17,7 +17,9 @@ import AppKit
         .defaultSize(width: 1220, height: 810)
         .commands {
             CommandGroup(replacing: .newItem) {
-                Button("开始新会议") { Task { await controller.startMeeting() } }.keyboardShortcut("n").disabled(controller.busy)
+                Button("开始新会议") { Task { await controller.requestStart() } }.keyboardShortcut("n").disabled(controller.busy)
+                Button("开始临时会议") { Task { await controller.startMeeting() } }
+                    .keyboardShortcut("n", modifiers: [.command, .shift]).disabled(controller.busy)
             }
             CommandMenu("会议") {
                 Button("显示或隐藏悬浮字幕") { controller.captionOverlay.toggle() }

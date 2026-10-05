@@ -16,7 +16,7 @@ import MeetingCore
             catch { print("FAIL: \(error.localizedDescription)"); exit(1) }
         }
         folder = FileManager.default.temporaryDirectory.appendingPathComponent("MeetingUIRegression-" + UUID().uuidString)
-        controller = MeetingController(storageRoot: folder)
+        controller = MeetingController(storageRoot: folder, calendar: offlineCalendar())
     }
     func show(_ state: String) {
         controller.starting = state == "preparing"
@@ -89,6 +89,53 @@ import MeetingCore
     func welcome() {
         show("complete")
         controller.meetings = []; controller.selectedID = nil
+        controller.calendar.preview(account: nil, events: [])
+    }
+    /// A calendar meeting a few minutes away, plus an overlapping one, while the library is open.
+    func calendarDue(overlapping: Bool = false, linked: Bool = false, week: Bool = false) {
+        library()
+        let now = Date()
+        var events = [sampleEvent("weekly", "产品周会：测试版发布计划", start: 4, end: 34, now: now, series: "weekly-series")]
+        if overlapping { events.append(sampleEvent("client", "Acme 合作沟通", start: -5, end: 25, now: now, join: false)) }
+        if week {
+            let day = 24.0 * 60
+            events += [sampleEvent("design", "设计评审：日程入口", start: 150, end: 195, now: now),
+                       sampleEvent("standup", "研发站会", start: day + 30, end: day + 45, now: now, series: "standup"),
+                       sampleEvent("berlin", "Weekly sync with Berlin team", start: day + 300, end: day + 345, now: now),
+                       sampleEvent("pricing", "企业版定价讨论", start: 2 * day + 120, end: 2 * day + 180, now: now, join: false),
+                       sampleEvent("hiring", "招聘面试 · 后端工程师", start: 3 * day + 60, end: 3 * day + 120, now: now),
+                       sampleEvent("q4", "Q4 规划", start: 5 * day + 90, end: 5 * day + 210, now: now)]
+            // An earlier occurrence of the weekly meeting already has a record.
+            if let link = controller.calendar.link(for: sampleEvent("weekly_prev", "产品周会：测试版发布计划", start: -7 * day + 4, end: -7 * day + 34,
+                                                                    now: now, series: "weekly-series")) {
+                controller.meetings[0].link(link)
+            }
+        }
+        controller.calendar.preview(account: "me@example.com", events: events, now: now)
+        controller.briefs.preview(week ? [sampleBrief("weekly", earlier: controller.meetings[0].id)] : [],
+                                  states: week ? ["standup": .generating] : [:])
+        if linked, let link = controller.calendar.link(for: sampleEvent("past", "设计评审：悬浮字幕", start: -50, end: 10, now: now)) {
+            controller.meetings[0].link(link); controller.meetings[0].title = "设计评审：悬浮字幕"
+        }
+    }
+    /// A summarized record read against its brief.
+    func contextSummary() {
+        library()
+        var meeting = controller.meetings[0]
+        meeting.brief = sampleBrief("weekly")
+        meeting.summary?.changes = [ContextPoint(text: "测试版发布日期确认为下周五，与邮件中的提议一致；前提改为周三前完成回归测试。",
+                                                 evidence: ["sample-3", "sample-4"], background: ["email:t1"])]
+        meeting.summary?.unaddressed = [ContextPoint(text: "企业版是否采用定价草案 v2 未讨论，仍待使用数据后决定。", evidence: ["sample-5"], background: ["email:t2"])]
+        controller.meetings[0] = meeting
+    }
+    func calendarRecording() {
+        captions()
+        let now = Date()
+        controller.calendar.preview(account: "me@example.com", events: [sampleEvent("next", "季度规划", start: 3, end: 63, now: now)], now: now)
+    }
+    func calendarOffline() {
+        library()
+        controller.calendar.preview(account: "me@example.com", events: [], syncState: .failed("网络连接已中断。"))
     }
     func append(translation: Bool = false, grow: Bool = false) {
         guard !controller.meetings.isEmpty else { return }
@@ -112,6 +159,12 @@ import MeetingCore
         if CommandLine.arguments.contains("--check-summary") {
             Task { @MainActor in
                 do { try await checkSummaryPreservation(); exit(0) }
+                catch { print("FAIL: \(error.localizedDescription)"); exit(1) }
+            }
+        }
+        if CommandLine.arguments.contains("--check-calendar") {
+            Task { @MainActor in
+                do { try await checkCalendarFlow(); exit(0) }
                 catch { print("FAIL: \(error.localizedDescription)"); exit(1) }
             }
         }
@@ -141,6 +194,8 @@ import MeetingCore
                     Button("会后全文") { state.captions(complete: true) }
                     Button("会议列表") { state.library() }
                     Button("欢迎页") { state.welcome() }
+                    Button("临近日程") { state.calendarDue(overlapping: true) }
+                    Button("录制中下一场") { state.calendarRecording() }
                     Button("悬浮字幕") { state.controller.captionOverlay.toggle() }
                     Button("安装引导") { state.previewAudioSetup = true }
                 }.padding(10) }

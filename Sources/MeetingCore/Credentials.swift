@@ -31,9 +31,11 @@ public protocol CredentialStorage {
 public final class KeychainCredentialStorage: CredentialStorage {
     private let service: String
     private let account: String
+    private let label: String
     // Keep the ad-hoc prototype's inaccessible item untouched. Stable signed builds use a new item.
-    public init(service: String = "com.meetingassistant.openai", account: String = "api-key-v2") {
-        self.service = service; self.account = account
+    public init(service: String = "com.meetingassistant.openai", account: String = "api-key-v2",
+                label: String = "Meeting Assistant OpenAI API Key") {
+        self.service = service; self.account = account; self.label = label
     }
     private var query: [String: Any] {
         [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
@@ -55,7 +57,7 @@ public final class KeychainCredentialStorage: CredentialStorage {
         let status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
         if status == errSecItemNotFound {
             var item = query; item[kSecValueData as String] = data
-            item[kSecAttrLabel as String] = "Meeting Assistant OpenAI API Key"
+            item[kSecAttrLabel as String] = label
             item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
             let added = SecItemAdd(item as CFDictionary, nil)
             guard added == errSecSuccess else { throw CredentialError.keychain(added) }

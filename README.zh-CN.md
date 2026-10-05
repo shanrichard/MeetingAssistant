@@ -58,11 +58,13 @@ open dist/MeetingAssistant.app
 
 项目没有第三方 Swift 包依赖。未设置 `MEETING_SIGNING_IDENTITY` 时，构建脚本会生成本地开发签名身份，签名材料保存在 `~/Library/Application Support/MeetingAssistant/DevelopmentSigning/`。开发构建不等于已公证的分发包。
 
-如果编译器报告 SDK 不兼容，请选择配套的 Xcode / Command Line Tools，或用 `SDKROOT` 指定已安装的兼容 SDK。脚本中的 `--disable-sandbox` 只关闭 SwiftPM 构建插件子沙盒，不会关闭 macOS 安全设置。
+如果编译器报告 SDK 不兼容，请选择配套的 Xcode / Command Line Tools，或用 `SDKROOT` 指定已安装的兼容 SDK。
+
+**Google 日历（可选）**：日历功能使用组织自己的 Google OAuth 桌面客户端，本仓库不附带客户端。组织的 GCP 管理员在组织下的项目中启用 Google Calendar API，把 OAuth 同意屏幕设为 Internal，创建“桌面应用”类型的客户端，再把 `client_id`、`client_secret` 写入不入库的 `Config/google-oauth-client.json`（或用 `MEETING_GOOGLE_OAUTH_CLIENT` 指向 Google Cloud 下载的 JSON）。`build-app.sh` 会在签名前写入应用；没有该文件时，构建出的版本不显示日历功能。详见 [方案](docs/方案.md#google-接入方式组织统一配置)。脚本中的 `--disable-sandbox` 只关闭 SwiftPM 构建插件子沙盒，不会关闭 macOS 安全设置。
 
 ### 开始会议
 
-1. 打开设置，输入 OpenAI API Key，点击“保存”，再验证连接。
+1. 打开设置，输入 OpenAI API Key，点击“保存”，再验证连接。如果使用公司构建，可在侧栏“即将开始”处直接用公司 Google 账号连接（也可在“设置 → Google 账号”中管理）；之后侧栏列出未来 7 天的会议，临近会议会在主窗口顶部提示，一键开始并自动关联日程。
 2. 选择真实麦克风、字幕与总结语言，以及向对方说的语言。
 3. 开始新会议，允许麦克风和系统音频权限，建议戴上耳机。
 4. 悬浮字幕会出现在会议窗口上方。鼠标移入显示控制条：暂停、发送译音、字号、背景透明度和鼠标穿透；把鼠标移到右上角的锁形图标可解除穿透。**⇧⌘T** 显示或隐藏悬浮字幕，默认外观在“设置 → 悬浮字幕”中调整。
@@ -88,12 +90,15 @@ open dist/MeetingAssistant.app
 | 数据 | 处理方式 |
 | --- | --- |
 | API Key | 保存在 macOS 钥匙串，用于直接向 OpenAI 官方 API 认证；不写入会议记录或导出。 |
+| Google 授权 | 可选。保存在 macOS 钥匙串，只用于直接读取 Google 主日历；不写入会议记录或导出。 |
+| 日程关联 | 已关联记录在本地保存日程标题、计划时间、组织者和受邀人，作为会议背景，不代表实际出席。 |
+| 邮件与会前说明 | 可选。授权后按参会人和会议标题只读检索相关邮件，连同日历邀请和历史总结发送给 OpenAI 自动生成会前说明；结果缓存在本机，断开 Google 账号时删除。会后总结会对照会前说明。 |
 | 实时音频 | 本地保存，同时在字幕或翻译会话期间发送至 OpenAI。 |
 | 已保存录音 | 保留在 Mac 上；会后总结不会再次上传录音重转写。 |
 | 总结输入 | 仅发送已保存的实时原文；原文缺失或为空时不会回退到上传音频。 |
 | Markdown 导出 | 仅文字和时间引用，不携带录音或凭据。 |
 
-会议文件位于 `~/Library/Application Support/MeetingAssistant/Meetings/`。应用直接连接 OpenAI，无共享代理或遥测后端。删除会议会删除对应的本地记录和录音；已导出的文件独立保留。
+会议文件位于 `~/Library/Application Support/MeetingAssistant/Meetings/`。应用直接连接 OpenAI（以及已连接时的 Google 日历），无共享代理或遥测后端。删除会议会删除对应的本地记录和录音；已导出的文件独立保留。
 
 ## 开发
 

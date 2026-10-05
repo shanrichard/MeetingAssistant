@@ -4,6 +4,7 @@ import MeetingCore
 struct ContentView: View {
     @ObservedObject var controller: MeetingController
     @ObservedObject private var audioSetup: BlackHoleSetup
+    @ObservedObject private var calendar: CalendarController
     @Environment(\.openWindow) private var openWindow
     @State private var librarySearch = ""
     @State private var renaming = false
@@ -11,18 +12,25 @@ struct ContentView: View {
     @State private var pendingDeletion: Meeting?
     init(controller: MeetingController) {
         self.controller = controller
-        audioSetup = controller.audioSetup
+        audioSetup = controller.audioSetup; calendar = controller.calendar
     }
     var body: some View {
         NavigationSplitView {
             MeetingSidebar(controller: controller, search: $librarySearch, rename: rename, delete: { pendingDeletion = $0 })
                 .navigationSplitViewColumnWidth(min: 240, ideal: 270, max: 340)
         } detail: {
-            if let meeting = controller.current {
-                MeetingDetailView(controller: controller, meeting: meeting,
-                                  rename: { rename(meeting) }, delete: { pendingDeletion = meeting })
-            } else {
-                WelcomeView(controller: controller)
+            VStack(spacing: 0) {
+                UpcomingMeetingBanner(controller: controller)
+                if let event = controller.selectedEvent {
+                    EventDetailView(controller: controller, event: event).id(event.id)
+                } else if controller.calendarSelection == .agenda {
+                    AgendaView(controller: controller)
+                } else if let meeting = controller.current {
+                    MeetingDetailView(controller: controller, meeting: meeting,
+                                      rename: { rename(meeting) }, delete: { pendingDeletion = meeting })
+                } else {
+                    WelcomeView(controller: controller)
+                }
             }
         }
         .navigationTitle(controller.current?.title ?? "Meeting Assistant")
@@ -30,6 +38,7 @@ struct ContentView: View {
         .tint(accent)
         .sheet(isPresented: $audioSetup.presented) { BlackHoleSetupView(setup: audioSetup) }
         .sheet(isPresented: $controller.needsKeySetup) { APIKeySetupSheet(controller: controller) }
+        .sheet(isPresented: $controller.startChooserPresented) { StartChooserSheet(controller: controller) }
         .alert("需要注意", isPresented: Binding(get: { controller.error != nil }, set: { if !$0 { controller.error = nil } })) {
             Button("知道了") { controller.error = nil }
         } message: { Text(controller.error ?? "") }
@@ -88,11 +97,12 @@ private struct LibraryGroup: Identifiable {
 private struct MeetingSidebar: View {
     @ObservedObject var controller: MeetingController
     @ObservedObject private var audioSetup: BlackHoleSetup
+    @ObservedObject private var calendar: CalendarController
     @Binding var search: String
     let rename: (Meeting) -> Void
     let delete: (Meeting) -> Void
     init(controller: MeetingController, search: Binding<String>, rename: @escaping (Meeting) -> Void, delete: @escaping (Meeting) -> Void) {
-        self.controller = controller; audioSetup = controller.audioSetup
+        self.controller = controller; audioSetup = controller.audioSetup; calendar = controller.calendar
         _search = search; self.rename = rename; self.delete = delete
     }
 
@@ -102,22 +112,47 @@ private struct MeetingSidebar: View {
                 primaryAction
                 SearchField(text: $search, prompt: "搜索会议或发言")
             }.padding(.horizontal, 12).padding(.top, 6).padding(.bottom, 4)
-            List(selection: $controller.selectedID) {
+            List(selection: selection) {
+                CalendarSidebarSection(controller: controller, search: search)
                 ForEach(groups) { group in
                     Section(group.title) {
                         ForEach(group.meetings) { meeting in
-                            MeetingRow(meeting: meeting, showsDate: group.showsDate).tag(meeting.id)
+                            MeetingRow(meeting: meeting, showsDate: group.showsDate).tag(SidebarItem.meeting(meeting.id))
                                 .contextMenu { menu(for: meeting) }
                         }
+                    }
+                }
+                if groups.isEmpty, calendar.configured {
+                    Section("会议记录") {
+                        Text(controller.meetings.isEmpty ? "还没有会议记录" : "没有匹配的会议").font(.caption).foregroundStyle(.secondary)
+                            .selectionDisabled()
                     }
                 }
             }
             .listStyle(.sidebar)
             .disabled(controller.busy)
-            .overlay { if groups.isEmpty { emptyState } }
+            .overlay { if groups.isEmpty, !calendar.configured { emptyState } }
             Divider()
             footer
         }
+    }
+
+    /// One selection across calendar items and records; picking a record clears the calendar item.
+    private var selection: Binding<SidebarItem?> {
+        Binding(get: {
+            switch controller.calendarSelection {
+            case .event(let id): return .event(id)
+            case .agenda: return .agenda
+            case nil: return controller.selectedID.map(SidebarItem.meeting)
+            }
+        }, set: { item in
+            switch item {
+            case .meeting(let id): controller.selectedID = id
+            case .event(let id): controller.calendarSelection = .event(id)
+            case .agenda: controller.calendarSelection = .agenda
+            case nil: controller.calendarSelection = nil; controller.selectedID = nil
+            }
+        })
     }
 
     private var groups: [LibraryGroup] {
@@ -150,18 +185,39 @@ private struct MeetingSidebar: View {
             .padding(.horizontal, 12).padding(.vertical, 9)
             .background(Color.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
         } else {
-            Button { Task { await controller.startMeeting() } } label: {
-                HStack(spacing: 8) {
-                    if controller.starting { ProgressView().controlSize(.small) } else { Image(systemName: "record.circle") }
-                    Text(controller.starting ? "正在准备…" : "开始会议").fontWeight(.semibold)
-                    Spacer()
-                    Text("⌘N").font(.system(size: 11)).opacity(0.7)
+            let due = controller.prominentEvents
+            VStack(spacing: 6) {
+                Button { Task { await startPrimary(due) } } label: {
+                    HStack(spacing: 8) {
+                        if controller.starting { ProgressView().controlSize(.small) }
+                        else { Image(systemName: due.isEmpty ? "record.circle" : "calendar.badge.clock") }
+                        Text(controller.starting ? "正在准备…" : primaryTitle(due)).fontWeight(.semibold).lineLimit(1)
+                        Spacer()
+                        Text("⌘N").font(.system(size: 11)).opacity(0.7)
+                    }
+                    .frame(maxWidth: .infinity).padding(.vertical, 3)
                 }
-                .frame(maxWidth: .infinity).padding(.vertical, 3)
+                .buttonStyle(.borderedProminent).controlSize(.large)
+                .disabled(controller.busy || audioSetup.working)
+                .help(due.count == 1 ? "开始记录并关联这场日程" : "")
+                if !due.isEmpty {
+                    Button("开始临时会议") { Task { await controller.startMeeting() } }
+                        .buttonStyle(.link).font(.caption)
+                        .disabled(controller.busy || audioSetup.working)
+                }
             }
-            .buttonStyle(.borderedProminent).controlSize(.large)
-            .disabled(controller.busy || audioSetup.working)
         }
+    }
+
+    private func primaryTitle(_ due: [CalendarEvent]) -> String {
+        switch due.count {
+        case 0: return "开始会议"
+        case 1: return "开始《\(due[0].displayTitle)》"
+        default: return "选择要开始的会议…"
+        }
+    }
+    private func startPrimary(_ due: [CalendarEvent]) async {
+        if due.count == 1 { await controller.startMeeting(event: due[0]) } else { await controller.requestStart() }
     }
 
     @ViewBuilder private func menu(for meeting: Meeting) -> some View {
@@ -219,9 +275,10 @@ private struct MeetingRow: View {
 private struct WelcomeView: View {
     @ObservedObject var controller: MeetingController
     @ObservedObject private var audioSetup: BlackHoleSetup
+    @ObservedObject private var calendar: CalendarController
     init(controller: MeetingController) {
         self.controller = controller
-        audioSetup = controller.audioSetup
+        audioSetup = controller.audioSetup; calendar = controller.calendar
     }
     private var microphone: AudioDevice? { controller.microphones.first { $0.uid == controller.preferences.microphoneUID } }
 
@@ -254,11 +311,21 @@ private struct WelcomeView: View {
                              detail: audioSetup.ready ? audioSetup.status : "需要 BlackHole 2ch 虚拟音频设备") {
                         if !audioSetup.ready { Button("设置…") { audioSetup.presented = true }.disabled(audioSetup.working) }
                     }
+                    if calendar.configured {
+                        Divider().padding(.leading, 54)
+                        SetupRow(done: calendar.account != nil && !calendar.needsReconnect, optional: true, icon: "calendar",
+                                 title: "Google 日历（可选）",
+                                 detail: calendar.account.map { "\($0) · 临近会议会在这里提醒" } ?? "连接后，临近的日历会议可一键开始并自动关联") {
+                            if calendar.account == nil || calendar.needsReconnect {
+                                GoogleConnectButton(calendar: calendar, style: .compact)
+                            }
+                        }
+                    }
                 }
                 .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.primary.opacity(0.08)))
                 VStack(spacing: 10) {
-                    Button { Task { await controller.startMeeting() } } label: {
+                    Button { Task { await controller.requestStart() } } label: {
                         Label("开始会议", systemImage: "record.circle").frame(minWidth: 180).padding(.vertical, 3)
                     }
                     .buttonStyle(.borderedProminent).controlSize(.large)

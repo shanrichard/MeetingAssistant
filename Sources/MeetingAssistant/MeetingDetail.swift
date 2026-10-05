@@ -1,7 +1,7 @@
 import SwiftUI
 import MeetingCore
 
-enum DetailTab: Hashable { case summary, transcript }
+enum DetailTab: Hashable { case brief, summary, transcript }
 
 struct MeetingDetailView: View {
     @ObservedObject var controller: MeetingController
@@ -12,6 +12,7 @@ struct MeetingDetailView: View {
     @State private var search = ""
     @State private var evidenceID: String?
     @State private var transcriptSource: TranscriptSource?
+    @State private var showingBrief = false
 
     private var isLive: Bool { controller.recording && (controller.liveMeeting?.id ?? meeting.id) == meeting.id }
     private var hasLiveText: Bool { meeting.liveSegments.contains(where: \.hasText) }
@@ -71,9 +72,11 @@ struct MeetingDetailView: View {
                     StateBadge(state: meeting.state)
                 }
                 .font(.callout).foregroundStyle(.secondary).lineLimit(1)
+                CalendarLinkRow(controller: controller, meeting: meeting)
             }
             HStack(spacing: 12) {
                 Picker("内容", selection: $tab) {
+                    if meeting.brief != nil { Text("会前说明").tag(DetailTab.brief) }
                     Text("会议总结").tag(DetailTab.summary)
                     Text("对话全文").tag(DetailTab.transcript)
                 }
@@ -100,7 +103,17 @@ struct MeetingDetailView: View {
     }
 
     @ViewBuilder private var content: some View {
-        if tab == .summary {
+        if tab == .brief, let brief = meeting.brief {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text(briefFooter(brief) + " · 会议开始时的版本").font(.caption).foregroundStyle(.secondary)
+                    BriefView(brief: brief, openMeeting: { controller.selectedID = $0 })
+                }
+                .frame(maxWidth: 820, alignment: .leading)
+                .padding(.horizontal, 28).padding(.vertical, 22)
+                .frame(maxWidth: .infinity)
+            }
+        } else if tab == .summary {
             summary
         } else {
             TranscriptTimeline(segments: meeting.segments(from: transcriptSource ?? meeting.defaultTranscriptSource), meeting: meeting,
@@ -116,6 +129,20 @@ struct MeetingDetailView: View {
                 Text(AppPreferences.languageName(meeting.subtitleLanguage)).font(.caption.weight(.medium)).foregroundStyle(accent)
                     .padding(.horizontal, 7).padding(.vertical, 2).background(accent.opacity(0.12), in: Capsule())
                 Spacer()
+                if let brief = meeting.brief {
+                    // The brief stays at hand during the meeting without leaving the live captions.
+                    Button { showingBrief.toggle() } label: { Label("会前说明", systemImage: "doc.text.magnifyingglass") }
+                        .popover(isPresented: $showingBrief, arrowEdge: .bottom) {
+                            ScrollView {
+                                VStack(alignment: .leading, spacing: 12) {
+                                    Text(briefFooter(brief)).font(.caption).foregroundStyle(.secondary)
+                                    BriefView(brief: brief)
+                                }
+                                .padding(18)
+                            }
+                            .frame(width: 480, height: 520)
+                        }
+                }
                 SearchField(text: $search, prompt: "搜索发言").frame(width: 210)
             }
             .padding(.horizontal, 28).padding(.vertical, 10)
@@ -138,7 +165,17 @@ struct MeetingDetailView: View {
                     SummarySection(title: "已作出的决策", icon: "checkmark.seal", points: summary.decisions, marker: .check, meeting: meeting, open: openEvidence)
                     SummarySection(title: "待办事项", icon: "checklist", points: summary.actions, marker: .todo, meeting: meeting, open: openEvidence)
                     SummarySection(title: "待确认的问题", icon: "questionmark.bubble", points: summary.questions, marker: .dot, meeting: meeting, open: openEvidence)
-                    Text("根据实时原文生成。点击条目右侧的引用图标可查看原文。").font(.caption).foregroundStyle(.tertiary)
+                    if let changes = summary.changes, !changes.isEmpty {
+                        ContextSummarySection(title: "相对会前的变化", icon: "arrow.triangle.branch", points: changes, meeting: meeting,
+                                              open: openEvidence, openMeeting: { controller.selectedID = $0 })
+                    }
+                    if let unaddressed = summary.unaddressed, !unaddressed.isEmpty {
+                        ContextSummarySection(title: "会前事项未讨论", icon: "tray", points: unaddressed, meeting: meeting,
+                                              open: openEvidence, openMeeting: { controller.selectedID = $0 })
+                    }
+                    Text(summary.changes == nil ? "根据实时原文生成。点击条目右侧的引用图标可查看原文。"
+                         : "根据实时原文生成，并对照会前说明。变化须有本次原文支持；来源标签指向邮件、日历或之前的会议。")
+                        .font(.caption).foregroundStyle(.tertiary)
                 }
                 .frame(maxWidth: 820, alignment: .leading)
                 .padding(.horizontal, 28).padding(.vertical, 22)
@@ -209,7 +246,7 @@ private struct SummarySection: View {
     }
 }
 
-private struct SummaryEvidenceButton: View {
+struct SummaryEvidenceButton: View {
     let point: SummaryPoint
     let meeting: Meeting
     let open: (String) -> Void

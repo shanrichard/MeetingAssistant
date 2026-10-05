@@ -45,6 +45,18 @@ public struct SummaryPoint: Codable, Identifiable, Sendable {
     public init(text: String, evidence: [String]) { self.text = text; self.evidence = evidence }
 }
 
+/// A summary point read against the pre-meeting background. Evidence cites this meeting's transcript;
+/// background cites brief sources (invitation, mail, earlier meetings), which are context only.
+public struct ContextPoint: Codable, Identifiable, Sendable {
+    public var id: String { text + evidence.joined() + background.joined() }
+    public var text: String
+    public var evidence: [String]
+    public var background: [String]
+    public init(text: String, evidence: [String], background: [String]) {
+        self.text = text; self.evidence = evidence; self.background = background
+    }
+}
+
 public struct MeetingSummary: Codable, Sendable {
     // Optional only for summaries saved before content-based titles were introduced.
     public var title: String?
@@ -53,9 +65,19 @@ public struct MeetingSummary: Codable, Sendable {
     public var decisions: [SummaryPoint]
     public var actions: [SummaryPoint]
     public var questions: [SummaryPoint]
-    public init(title: String? = nil, overview: [SummaryPoint], decisions: [SummaryPoint], actions: [SummaryPoint], questions: [SummaryPoint]) {
+    /// What this meeting changed, confirmed or resolved relative to the brief; nil without a brief or in older summaries.
+    public var changes: [ContextPoint]?
+    /// Brief items this meeting did not resolve or discuss.
+    public var unaddressed: [ContextPoint]?
+    public init(title: String? = nil, overview: [SummaryPoint], decisions: [SummaryPoint], actions: [SummaryPoint], questions: [SummaryPoint],
+                changes: [ContextPoint]? = nil, unaddressed: [ContextPoint]? = nil) {
         self.title = title
         self.overview = overview; self.decisions = decisions; self.actions = actions; self.questions = questions
+        self.changes = changes; self.unaddressed = unaddressed
+    }
+    /// Every transcript reference, including those in context points.
+    public var evidenceIDs: [String] {
+        (overview + decisions + actions + questions).flatMap(\.evidence) + (changes ?? []).flatMap(\.evidence) + (unaddressed ?? []).flatMap(\.evidence)
     }
     public func validated(against ids: Set<String>) throws -> MeetingSummary {
         let title = (title ?? "").split(whereSeparator: \.isWhitespace).joined(separator: " ")
@@ -64,6 +86,17 @@ public struct MeetingSummary: Codable, Sendable {
         }
         for point in overview + decisions + actions + questions {
             guard !point.text.isEmpty, !point.evidence.isEmpty, point.evidence.allSatisfy(ids.contains) else {
+                throw MeetingError.message("总结包含无效的原文引用，请重新生成。")
+            }
+        }
+        // A change in this meeting must be shown by its transcript; an unaddressed item may have none.
+        for point in changes ?? [] {
+            guard !point.text.isEmpty, !point.evidence.isEmpty, !point.background.isEmpty, point.evidence.allSatisfy(ids.contains) else {
+                throw MeetingError.message("总结包含无效的原文引用，请重新生成。")
+            }
+        }
+        for point in unaddressed ?? [] {
+            guard !point.text.isEmpty, !point.background.isEmpty, point.evidence.allSatisfy(ids.contains) else {
                 throw MeetingError.message("总结包含无效的原文引用，请重新生成。")
             }
         }
@@ -91,19 +124,42 @@ public struct Meeting: Codable, Identifiable, Sendable {
     public var processedChunks: [String] = []
     public var summary: MeetingSummary?
     public var notices: [String] = []
-    public init(id: UUID = UUID(), title: String? = nil, subtitleLanguage: String = "zh", outgoingLanguage: String = "en") {
+    /// The calendar occurrence this record belongs to; nil for ad-hoc meetings and records from older versions.
+    public var calendar: CalendarLink?
+    /// The pre-meeting brief as it was when the record was linked; background for the summary.
+    public var brief: MeetingBrief?
+    /// The automatic name was taken from the linked event, so summaries leave it alone.
+    /// Kept apart from `titleSource` so older versions can still open linked records.
+    public var calendarNamed: Bool?
+    public init(id: UUID = UUID(), title: String? = nil, calendar: CalendarLink? = nil,
+                subtitleLanguage: String = "zh", outgoingLanguage: String = "en") {
         self.id = id; self.createdAt = Date()
-        self.title = title ?? Self.defaultTitle(at: createdAt)
-        self.titleSource = title == nil ? .automatic : .manual
+        self.title = Self.defaultTitle(at: createdAt); self.titleSource = .automatic
         self.subtitleLanguage = subtitleLanguage; self.outgoingLanguage = outgoingLanguage
+        link(calendar)
+        if let title { self.title = title; titleSource = .manual; calendarNamed = nil }
     }
     public static func defaultTitle(at date: Date) -> String {
         "会议 \(date.formatted(date: .abbreviated, time: .shortened))"
     }
+    /// Manual names always stay; calendar names follow the linked event; summaries replace only generated names.
+    public var titleFollowsCalendar: Bool { titleSource == .automatic && calendarNamed == true }
+    /// Legacy records have no provenance; only their exact default name counts as generated.
+    var hasGeneratedTitle: Bool {
+        (titleSource == .automatic && calendarNamed != true) || (titleSource == nil && title == Self.defaultTitle(at: createdAt))
+    }
+    /// Links, relinks or unlinks the calendar occurrence. Recordings, transcript, summary and manual names are untouched.
+    public mutating func link(_ link: CalendarLink?) {
+        calendar = link
+        guard hasGeneratedTitle || titleFollowsCalendar else { return }
+        if let link, !link.title.isEmpty {
+            title = link.title; titleSource = .automatic; calendarNamed = true
+        } else if titleFollowsCalendar {
+            title = summary?.title ?? Self.defaultTitle(at: createdAt); calendarNamed = nil
+        }
+    }
     public mutating func applySummary(_ summary: MeetingSummary) {
-        // Legacy records have no provenance; only replace their exact default name.
-        let automaticallyNamed = titleSource == .automatic || (titleSource == nil && title == Self.defaultTitle(at: createdAt))
-        if automaticallyNamed, let generatedTitle = summary.title {
+        if hasGeneratedTitle, let generatedTitle = summary.title {
             title = generatedTitle
             titleSource = .automatic
         }
@@ -126,8 +182,7 @@ public struct Meeting: Codable, Identifiable, Sendable {
     public var summaryUsesDifferentTranscript: Bool {
         guard let summary else { return false }
         let ids = Set(displayedSegments.filter(\.hasText).map(\.id))
-        return (summary.overview + summary.decisions + summary.actions + summary.questions)
-            .flatMap(\.evidence).contains { !ids.contains($0) }
+        return summary.evidenceIDs.contains { !ids.contains($0) }
     }
     public func speaker(for segment: TranscriptSegment) -> String {
         segment.source.title
@@ -144,11 +199,22 @@ public struct Meeting: Codable, Identifiable, Sendable {
     }
     public func markdown() -> String {
         var lines = ["# \(title)", "", "\(createdAt.formatted()) · \(timestamp(duration))", ""]
+        if let calendar {
+            lines += ["日程：\(calendar.displayTitle) · \(calendar.scheduledStart.formatted(date: .abbreviated, time: .shortened))–\(calendar.scheduledEnd.formatted(date: .omitted, time: .shortened))", ""]
+        }
         if let summary {
             for (title, points) in [("会议概要", summary.overview), ("决策", summary.decisions), ("待办", summary.actions), ("待确认", summary.questions)] {
                 lines += ["## \(title)", ""]
                 lines += points.map { point in
                     "- \(point.text) " + point.evidence.map { "[原文](#\($0))" }.joined(separator: " ")
+                }
+                lines.append("")
+            }
+            for (title, points) in [("相对会前的变化", summary.changes ?? []), ("会前事项未讨论", summary.unaddressed ?? [])] where !points.isEmpty {
+                lines += ["## \(title)", ""]
+                lines += points.map { point in
+                    let background = point.background.compactMap { brief?.source($0)?.title }.map { "背景：\($0)" }
+                    return (["- \(point.text)"] + point.evidence.map { "[原文](#\($0))" } + background).joined(separator: " ")
                 }
                 lines.append("")
             }

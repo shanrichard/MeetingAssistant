@@ -25,3 +25,6 @@ keychain-password
 DevelopmentSigning/
 *.mobileprovision
 *.provisionprofile
+
+# Organization Google OAuth client, injected into release builds only
+/Config/google-oauth-client.json

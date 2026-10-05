@@ -23,6 +23,7 @@ struct SettingsView: View {
             GeneralSettings(controller: controller).tabItem { Label("通用", systemImage: "gearshape") }.tag("general")
             AudioSettings(controller: controller).tabItem { Label("音频", systemImage: "hifispeaker.2") }.tag("audio")
             VoicePickerView(controller: controller).tabItem { Label("同传声音", systemImage: "person.wave.2") }.tag("voice")
+            GoogleAccountSettings(controller: controller).tabItem { Label("Google 账号", systemImage: "person.crop.circle") }.tag("google")
             CaptionSettings().tabItem { Label("悬浮字幕", systemImage: "captions.bubble") }.tag("captions")
             PrivacySettings(controller: controller).tabItem { Label("隐私", systemImage: "lock.shield") }.tag("privacy")
         }

@@ -11,7 +11,11 @@ import MeetingCore
 @MainActor final class MeetingController: ObservableObject {
     @Published var preferences: AppPreferences
     @Published var meetings: [Meeting] = []
-    @Published var selectedID: UUID?
+    /// Selecting a record replaces any calendar item in the detail pane.
+    @Published var selectedID: UUID? { didSet { if selectedID != nil { calendarSelection = nil } } }
+    enum CalendarSelection: Hashable { case event(String), agenda }
+    /// A calendar event or the agenda shown in the detail pane instead of a record.
+    @Published var calendarSelection: CalendarSelection?
     @Published var devices: [AudioDevice] = []
     @Published var hasSavedKey = false
     @Published var needsKeySetup = false
@@ -27,6 +31,10 @@ import MeetingCore
     let audioLevels = AudioLevels()
     let audioSetup = BlackHoleSetup()
     let captionOverlay = CaptionOverlay()
+    let calendar: CalendarController
+    let briefs: BriefController
+    /// Generic start entries show this when calendar meetings are due, instead of guessing by time.
+    @Published var startChooserPresented = false
     var micLevel: Double { get { audioLevels.microphone } set { audioLevels.microphone = newValue } }
     var systemLevel: Double { get { audioLevels.system } set { audioLevels.system = newValue } }
     @Published var micState = "未连接"
@@ -67,8 +75,14 @@ import MeetingCore
     var virtualOutputs: [AudioDevice] { devices.filter { $0.input && $0.output && $0.virtual } }
     var modelNames: String { "字幕 gpt-realtime-translate / gpt-live-transcribe · 译音 \(LiveInterpreter.model)（\(preferences.outgoingVoice.name)）· 总结 \(OpenAIClient.textModel)" }
 
-    init(storageRoot: URL? = nil, apiSession: URLSession? = nil, credentialStorage: CredentialStorage = KeychainCredentialStorage()) {
+    init(storageRoot: URL? = nil, apiSession: URLSession? = nil, credentialStorage: CredentialStorage = KeychainCredentialStorage(),
+         calendar: CalendarController? = nil) {
         self.apiSession = apiSession
+        let calendar = calendar ?? CalendarController()
+        self.calendar = calendar
+        // Test stores keep their briefs beside the meetings; MeetingStore ignores non-UUID folders.
+        briefs = BriefController(calendar: calendar, storeRoot: storageRoot?.appendingPathComponent("Briefs", isDirectory: true),
+                                 apiSession: apiSession)
         credentials = CredentialSession(storage: credentialStorage)
         preferences = UserDefaults.standard.data(forKey: "preferences").flatMap { try? JSONDecoder().decode(AppPreferences.self, from: $0) } ?? AppPreferences()
         do { store = try MeetingStore(root: storageRoot) } catch { fatalError("无法打开会议存储目录：\(error.localizedDescription)") }
@@ -89,6 +103,16 @@ import MeetingCore
         if !hasSavedKey, UserDefaults.standard.bool(forKey: "hasKey") {
             keyStatus = "升级后请重新填写 Key 并保存。"
         }
+        briefs.makeClient = { [unowned self] in try self.makeClient().1 }
+        briefs.history = { [unowned self] event in self.seriesRecords(for: event) }
+        briefs.language = { [unowned self] in self.preferences.subtitleLanguage }
+        briefs.hasOpenAIKey = { [unowned self] in self.hasSavedKey }
+        calendar.onSynced = { [weak self] in
+            guard let self else { return }
+            self.briefs.reload()
+            Task { await self.briefs.generateDue() }
+        }
+        calendar.onDisconnected = { [weak self] in self?.briefs.clear() }
         voice.onState = { [weak self] text in self?.voiceState = text }
         voice.onError = { [weak self] text in
             guard let self else { return }
@@ -124,7 +148,9 @@ import MeetingCore
             try credentials.save(key); hasSavedKey = true
             client = nil
             UserDefaults.standard.set(true, forKey: "hasSavedCredentialV2")
-            keyStatus = "Key 已保存，下次启动可继续使用。"; return true
+            keyStatus = "Key 已保存，下次启动可继续使用。"
+            Task { await briefs.generateDue() }
+            return true
         } catch { keyStatus = error.localizedDescription; return false }
     }
     func removeKey() {
@@ -148,8 +174,50 @@ import MeetingCore
                 "Key 有效；账户未列出 \(missing.joined(separator: "、"))，需确认模型权限"
         } catch { keyStatus = "验证失败：\(error.localizedDescription)" }
     }
-    func startMeeting() async {
+    /// Calendar occurrences that already have a record no longer lead the start entries.
+    var recordedEventKeys: Set<CalendarEventKey> { Set(meetings.compactMap { $0.calendar?.key }) }
+    var prominentEvents: [CalendarEvent] {
+        guard let account = calendar.account else { return [] }
+        return CalendarSchedule.prominent(calendar.events, at: calendar.now, account: account, recorded: recordedEventKeys)
+    }
+    var upcomingEvents: [CalendarEvent] {
+        calendar.account == nil ? [] : CalendarSchedule.upcoming(calendar.events, at: calendar.now)
+    }
+    var selectedEvent: CalendarEvent? {
+        guard case .event(let id) = calendarSelection else { return nil }
+        return calendar.events.first { $0.id == id }
+    }
+    func seriesRecords(for event: CalendarEvent) -> [Meeting] {
+        guard let account = calendar.account else { return [] }
+        return CalendarSchedule.seriesRecords(meetings, for: event, account: account)
+    }
+    var startableEvents: [CalendarEvent] {
+        calendar.account == nil ? [] : CalendarSchedule.startable(calendar.events, at: calendar.now)
+    }
+    func records(for event: CalendarEvent) -> [Meeting] {
+        guard let key = calendar.key(for: event) else { return [] }
+        return meetings.filter { $0.calendar?.key == key }
+    }
+    /// The sidebar, welcome page and ⌘N all come here, so no entry skips choosing the calendar meeting.
+    func requestStart() async {
         guard !busy else { return }
+        if prominentEvents.isEmpty { await startMeeting() } else { startChooserPresented = true }
+    }
+    func startMeeting(event: CalendarEvent) async {
+        guard let link = calendar.link(for: event) else {
+            error = "Google 账号已断开，无法关联这场日程。请重新连接后再开始，或开始临时会议。"; return
+        }
+        await startMeeting(link: link)
+    }
+    /// Adds another record for the same occurrence, e.g. after an interruption.
+    func appendRecord(to meeting: Meeting) async {
+        guard var link = meeting.calendar else { return }
+        link.linkedAt = Date()
+        await startMeeting(link: link)
+    }
+    func startMeeting(link: CalendarLink? = nil) async {
+        guard !busy else { return }
+        startChooserPresented = false
         guard !audioSetup.working else { error = "音频组件正在准备安装，请完成或取消后再开始会议。"; return }
         starting = true; defer { starting = false }
         status = "正在准备会议…"
@@ -162,7 +230,10 @@ import MeetingCore
             }
             let allowed = await AVCaptureDevice.requestAccess(for: .audio)
             guard allowed else { throw MeetingError.message("请在系统设置 → 隐私与安全性 → 麦克风中允许 MeetingAssistant。") }
-            let meeting = Meeting(subtitleLanguage: preferences.subtitleLanguage, outgoingLanguage: preferences.outgoingLanguage)
+            var meeting = Meeting(calendar: link, subtitleLanguage: preferences.subtitleLanguage, outgoingLanguage: preferences.outgoingLanguage)
+            // The record keeps the brief as it stood at the start, as background for its summary.
+            if let link, link.account == calendar.account { meeting.brief = briefs.brief(for: link.eventID) }
+            // The record and its calendar link are saved before capture; a failure here starts nothing.
             try store.save(meeting)
             createdMeetingID = meeting.id
             meetings.insert(meeting, at: 0); selectedID = meeting.id; activeID = meeting.id
@@ -397,13 +468,28 @@ import MeetingCore
                 throw MeetingError.message("没有可总结的实时原文。录音已保存在本地。")
             }
             let (_, client) = try makeClient()
+            var background = meeting, backgroundNote = ""
+            // A linked record without a brief gets one first, so the summary can compare against mail and earlier meetings.
+            if let link = meeting.calendar, meeting.brief == nil, link.account == calendar.account {
+                status = "正在整理会前背景（日历、邮件和历史记录）…"
+                do {
+                    let brief = try await briefs.briefAfterwards(for: link)
+                    background.brief = brief
+                    if var stored = meetings.first(where: { $0.id == id }) {
+                        stored.brief = brief
+                        try store.save(stored); replace(stored)
+                    }
+                } catch {
+                    backgroundNote = "；未能读取会前背景（\(error.localizedDescription)），本次只基于实时原文"
+                }
+            }
             status = "正在根据\(meeting.defaultTranscriptSource.title)生成总结…"
-            let summary = try await client.summarize(meeting)
+            let summary = try await client.summarize(background)
             // A manual rename may arrive while the request is in flight.
             guard var updated = meetings.first(where: { $0.id == id }) else { return }
             updated.applySummary(summary)
             try store.save(updated); replace(updated)
-            status = "会议总结已更新"
+            status = "会议总结已更新" + backgroundNote
         } catch {
             if error is CredentialError { keyStatus = error.localizedDescription; needsKeySetup = true }
             self.error = error.localizedDescription
@@ -430,6 +516,17 @@ import MeetingCore
         var meeting = meetings[i]
         meeting.title = text; meeting.titleSource = .manual
         do { try store.save(meeting); replace(meeting) } catch { self.error = error.localizedDescription }
+    }
+    /// Links, corrects or removes a record's calendar occurrence without touching recordings, transcript or summary.
+    func linkMeeting(_ id: UUID, to event: CalendarEvent?) {
+        guard !busy, let index = meetings.firstIndex(where: { $0.id == id }) else { return }
+        var meeting = meetings[index]
+        if let event {
+            guard let link = calendar.link(for: event) else { error = "Google 账号已断开，无法关联日程。"; return }
+            if meeting.calendar?.key != link.key { meeting.brief = briefs.brief(for: event.id) }
+            meeting.link(link)
+        } else { meeting.link(nil); meeting.brief = nil }
+        do { try store.save(meeting); replace(meeting) } catch { self.error = "关联未保存：\(error.localizedDescription)" }
     }
     func revealInFinder(_ id: UUID) {
         NSWorkspace.shared.activateFileViewerSelecting([store.folder(id)])
