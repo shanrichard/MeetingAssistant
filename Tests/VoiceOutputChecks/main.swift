@@ -10,6 +10,7 @@ private func require(_ condition: @autoclosure () -> Bool, _ message: String) th
 @MainActor private final class FakePlayback: VoicePlayback {
     var onConfigurationChange: (() -> Void)?
     var isRunning = false
+    var lastObservedDevice: VoicePlaybackDevice?
     var starts: [AudioDevice] = []
     var scheduled: [Data] = []
     var completions: [@MainActor () -> Void] = []
@@ -23,6 +24,9 @@ private func require(_ condition: @autoclosure () -> Bool, _ message: String) th
         startHook?()
     }
     func validateRoute(device: AudioDevice) throws {
+        lastObservedDevice = failRoute
+            ? VoicePlaybackDevice(id: 91, uid: "headphones", name: "Test headphones", alive: true)
+            : VoicePlaybackDevice(id: device.id, uid: device.uid, name: device.name, alive: true)
         if failRoute { throw MeetingError.message("Simulated route mismatch") }
     }
     func schedule(_ pcm: Data, completion: @escaping @MainActor () -> Void) throws {
@@ -135,7 +139,49 @@ private func require(_ condition: @autoclosure () -> Bool, _ message: String) th
         f.voice.enqueuePCM(Data([1]))
         try require(!f.voice.running && f.errors.count == 1, "Reject incomplete Int16 PCM")
     }
-    print("PASS: startup notifications, coalescing, pending audio, stale callbacks, cancellation, UID binding, bounded failures and PCM limits")
+    do {
+        let f = Fixture(); try f.start()
+        // A route can change while the engine keeps running, before (or without)
+        // an AVAudioEngineConfigurationChange notification reaching the owner.
+        f.playback.failRoute = true
+        f.playback.startHook = { [weak f] in f?.playback.failRoute = false }
+        f.voice.enqueuePCM(Data([7, 0]))
+        try require(f.playback.scheduled.isEmpty, "Never enqueue translated speech on a mismatched running output")
+        try await waitFor("route rebound before audio") { f.playback.scheduled.count == 1 }
+        try require(f.playback.starts.count == 2 && f.playback.starts.last?.uid == f.device.uid,
+                    "Rebind only the selected virtual device before playing pending speech")
+        try require(f.errors.isEmpty, "A recoverable output drift must not terminate translation")
+        try require(f.voice.routeDiagnostics.lastObservedDevice?.uid == f.device.uid &&
+                    f.voice.routeDiagnostics.lastMismatchedDevice?.uid == "headphones",
+                    "Preserve both the verified current route and evidence of the rejected headphones route")
+        f.voice.stop()
+    }
+    do {
+        let f = Fixture(); try f.start()
+        f.voice.enqueuePCM(Data([8, 0]))
+        // No further audio or notifications: the watchdog must still stop queued
+        // playback on a bad route and bound its attempts to recover that route.
+        f.playback.failRoute = true
+        try await waitFor("idle route drift") { !f.voice.running }
+        try require(f.playback.starts.count == 4 && f.errors.count == 1 && !f.playback.isRunning,
+                    "Stop after three unsuccessful rebindings even when no new PCM arrives")
+        try require(f.playback.scheduled == [Data([8, 0])], "Never replay uncertain speech during route recovery")
+        let diagnostics = f.voice.routeDiagnostics
+        try require(!diagnostics.running && !diagnostics.recovering && diagnostics.lastCheckedAt != nil &&
+                    diagnostics.selectedDevice?.uid == f.device.uid && diagnostics.lastMismatchedDevice?.uid == "headphones",
+                    "Preserve actual route evidence after a fatal output failure")
+        let saved = try JSONSerialization.jsonObject(with: JSONEncoder().encode(diagnostics)) as? [String: Any]
+        try require((saved?["lastMismatchedDevice"] as? [String: Any])?["name"] as? String == "Test headphones",
+                    "Persist the actual device name in shareable audio diagnostics")
+    }
+    do {
+        let f = Fixture(); try f.start()
+        f.voice.stop(); f.playback.failRoute = true
+        try await Task.sleep(for: .milliseconds(350))
+        try require(f.playback.starts.count == 1 && f.errors.isEmpty && !f.voice.running,
+                    "Stopping must cancel the route watchdog as well as recovery")
+    }
+    print("PASS: startup notifications, coalescing, pending audio, stale callbacks, cancellation, UID binding, bounded failures, PCM limits, unnotified route drift and route diagnostics")
 }
 
 // Hardware checks send silence only to BlackHole. No microphone, API or Keychain access.
@@ -144,13 +190,17 @@ private func require(_ condition: @autoclosure () -> Bool, _ message: String) th
     let engine: EngineVoicePlayback
     var onConfigurationChange: (() -> Void)?
     var isRunning: Bool { engine.isRunning }
+    var lastObservedDevice: VoicePlaybackDevice? { engine.lastObservedDevice }
     var completedBytes = 0
     var starts = 0
     var notifications = 0
+    var forwardNotifications = true
     init() {
         engine = EngineVoicePlayback(engine: rawEngine)
         engine.onConfigurationChange = { [weak self] in
-            self?.notifications += 1; self?.onConfigurationChange?()
+            guard let self else { return }
+            self.notifications += 1
+            if self.forwardNotifications { self.onConfigurationChange?() }
         }
     }
     func start(device: AudioDevice) throws { starts += 1; try engine.start(device: device) }
@@ -166,6 +216,7 @@ private func require(_ condition: @autoclosure () -> Bool, _ message: String) th
         print("SKIP: BlackHole 2ch is not available"); exit(2)
     }
     let system = AudioObjectID(kAudioObjectSystemObject)
+    let originalInput = try AudioDevices.defaultInput()
     let originalDefault = try AudioDevices.value(system, kAudioHardwarePropertyDefaultOutputDevice, initial: AudioObjectID(0))
     for attempt in 1...10 {
         let playback = ObservedPlayback()
@@ -177,6 +228,11 @@ private func require(_ condition: @autoclosure () -> Bool, _ message: String) th
         try await Task.sleep(for: .milliseconds(650))
         try require(voice.running && playback.isRunning && errors.isEmpty, "BlackHole startup must stay active")
         try playback.validateRoute(device: device)
+        if attempt == 1 {
+            let processDevices = try AudioDevices.processOutputDeviceIDs()
+            print("ROUTE: interpreter=\(playback.lastObservedDevice?.id ?? 0) \(playback.lastObservedDevice?.uid ?? "unknown"); process_output_devices=\(processDevices)")
+            try require(processDevices.contains(device.id), "CoreAudio must report BlackHole in this test process's actual output devices")
+        }
         voice.enqueuePCM(Data(repeating: 0, count: 9_600))
         try await waitFor("silence played") { playback.completedBytes >= 9_600 }
         // Exercise runtime recovery without changing any shared device settings.
@@ -191,8 +247,41 @@ private func require(_ condition: @autoclosure () -> Bool, _ message: String) th
         try require(playback.notifications >= 1, "The real notification observer must receive the injected configuration event")
         print("PASS: BlackHole cycle \(attempt), starts=\(playback.starts), notifications=\(playback.notifications) (1 injected), completed=\(playback.completedBytes) silent bytes")
     }
+    if originalDefault != device.id {
+        let playback = ObservedPlayback()
+        let voice = VoiceOutput(makePlayback: { playback })
+        var errors: [String] = []
+        voice.onError = { errors.append($0) }
+        defer { voice.stop() }
+        try voice.start(device: device)
+        try await Task.sleep(for: .milliseconds(650))
+        playback.forwardNotifications = false
+        // Change only this test engine's output; never the system route. No
+        // non-silent audio is scheduled, even on a regressed implementation.
+        playback.rawEngine.stop()
+        guard let unit = playback.rawEngine.outputNode.audioUnit else {
+            throw MeetingError.message("Missing hardware output unit")
+        }
+        var wrongDevice = originalDefault
+        try AudioDevices.check(AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice,
+            kAudioUnitScope_Global, 0, &wrongDevice, UInt32(MemoryLayout<AudioObjectID>.size)), "Inject test output drift")
+        var rejected = false
+        do { try playback.engine.schedule(Data(repeating: 0, count: 9_600)) {} }
+        catch { rejected = true }
+        try require(rejected, "The native player must reject PCM after its actual output drifts")
+        try await waitFor("native route drift recovery without notifications") {
+            voice.routeDiagnostics.lastMismatchedDevice?.id == originalDefault &&
+            voice.routeDiagnostics.lastObservedDevice?.uid == device.uid && !voice.routeDiagnostics.recovering
+        }
+        try require(voice.running && errors.isEmpty, "The watchdog must rebind the original BlackHole after native drift")
+        voice.enqueuePCM(Data(repeating: 0, count: 9_600))
+        try await waitFor("silence on rebound route") { playback.completedBytes >= 9_600 }
+        print("PASS: native output drift rejected; recovered \(voice.routeDiagnostics.lastMismatchedDevice?.name ?? "unknown") -> \(voice.routeDiagnostics.lastObservedDevice?.name ?? "unknown"); only silent PCM used")
+    }
     let finalDefault = try AudioDevices.value(system, kAudioHardwarePropertyDefaultOutputDevice, initial: AudioObjectID(0))
     try require(originalDefault == finalDefault, "The system default output must not change")
+    let finalInput = try AudioDevices.defaultInput()
+    try require(originalInput == finalInput, "The system default input must not change")
 }
 
 @main struct VoiceOutputChecks {

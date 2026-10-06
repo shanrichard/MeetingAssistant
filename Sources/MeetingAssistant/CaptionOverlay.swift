@@ -29,6 +29,7 @@ import MeetingCore
     private var mouseTimer: Timer?
     private var recordingObserver: AnyCancellable?
     private var dragStart: (mouse: NSPoint, frame: NSRect)?
+    private var moving = false
 
     func attach(_ controller: MeetingController) {
         self.controller = controller
@@ -65,14 +66,16 @@ import MeetingCore
         Task { await controller.finishMeeting() }
     }
 
-    // Moves and resizes from screen-space mouse positions, so the panel never chases its own coordinates.
-    func drag() {
-        guard let panel else { return }
-        let mouse = NSEvent.mouseLocation
-        let start = dragStart ?? (mouse, panel.frame)
-        dragStart = start
-        panel.setFrameOrigin(NSPoint(x: start.frame.minX + mouse.x - start.mouse.x, y: start.frame.minY + mouse.y - start.mouse.y))
+    // Let AppKit own the drag, including the first click while the meeting app is active.
+    func drag(with event: NSEvent) {
+        guard let panel, !clickThrough else { return }
+        moving = true
+        panel.performDrag(with: event)
+        moving = false
+        panel.saveFrame(usingName: Self.frameName)
+        trackMouse()
     }
+    // Resize from screen-space mouse positions, so the panel never chases its own coordinates.
     func resize() {
         guard let panel else { return }
         let mouse = NSEvent.mouseLocation
@@ -116,7 +119,7 @@ import MeetingCore
         guard let panel, visible else { return }
         let mouse = NSEvent.mouseLocation, frame = panel.frame
         let badge = NSRect(x: frame.maxX - Self.badgeArea, y: frame.maxY - Self.badgeArea, width: Self.badgeArea, height: Self.badgeArea)
-        let inside = frame.contains(mouse) || dragStart != nil
+        let inside = frame.contains(mouse) || moving || dragStart != nil
         let onBadge = clickThrough && badge.contains(mouse)
         if hovering != inside { withAnimation(.easeOut(duration: 0.18)) { hovering = inside } }
         if hoveringBadge != onBadge { hoveringBadge = onBadge }
@@ -149,6 +152,22 @@ final class CaptionPanel: NSPanel {
 /// Controls respond to the first click even though the meeting app stays frontmost.
 private final class FirstMouseHostingView<Content: View>: NSHostingView<Content> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+/// A native mouse surface avoids SwiftUI background gestures being swallowed by the hosted content.
+private struct CaptionDragArea: NSViewRepresentable {
+    var onDrag: (NSEvent) -> Void
+
+    func makeNSView(context: Context) -> DragView { DragView() }
+    func updateNSView(_ view: DragView, context: Context) { view.onDrag = onDrag }
+
+    final class DragView: NSView {
+        var onDrag: ((NSEvent) -> Void)?
+        override var mouseDownCanMoveWindow: Bool { false }
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+        override func mouseDown(with event: NSEvent) { onDrag?(event) }
+        override func resetCursorRects() { addCursorRect(bounds, cursor: .openHand) }
+    }
 }
 
 struct CaptionOverlayView: View {
@@ -206,9 +225,7 @@ struct CaptionOverlayView: View {
                     .strokeBorder(.white.opacity(overlay.hovering && !overlay.clickThrough ? 0.3 : 0), lineWidth: 1)
             }
             .contentShape(Rectangle())
-            .gesture(DragGesture(minimumDistance: 1)
-                .onChanged { _ in overlay.drag() }
-                .onEnded { _ in overlay.endDrag() })
+            .overlay { CaptionDragArea { overlay.drag(with: $0) } }
     }
     private var quietStatus: some View {
         HStack(spacing: 6) {
@@ -330,12 +347,18 @@ private struct CaptionToolbar: View {
             row(slider: false, toggles: false)
         }
         .padding(.horizontal, 8).padding(.vertical, 5)
+        .background { CaptionDragArea { overlay.drag(with: $0) } }
         .background(.black.opacity(0.62), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
         .padding(6)
     }
 
     private func row(slider: Bool, toggles: Bool) -> some View {
         HStack(spacing: 4) {
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 13, weight: .semibold)).foregroundStyle(.white.opacity(0.8))
+                .frame(width: 24, height: 24)
+                .overlay { CaptionDragArea { overlay.drag(with: $0) } }
+                .help("拖动移动悬浮字幕").accessibilityLabel("拖动移动悬浮字幕")
             RecordingDot(paused: controller.paused, elapsed: controller.elapsed, size: 7).padding(.leading, 4)
             Text(timestamp(controller.elapsed)).font(.system(size: 12, weight: .medium).monospacedDigit())
                 .foregroundStyle(.white.opacity(0.85)).padding(.trailing, 4)

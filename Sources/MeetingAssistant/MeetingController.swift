@@ -311,17 +311,26 @@ import MeetingCore
         if let outgoingTranslator { lastOutgoingStatistics = await outgoingTranslator.statistics }
         connections["outgoing"] = lastOutgoingStatistics
         guard activeID == id else { return }
+        var processOutputDeviceIDs: [UInt32]?
+        var processOutputReadError: String?
+        do { processOutputDeviceIDs = try AudioDevices.processOutputDeviceIDs() }
+        catch { processOutputReadError = error.localizedDescription }
         struct Snapshot: Encodable {
             let capturedBytes: [String: Int]
             let dispatchDroppedBytes: [String: Int]
             let connections: [String: TranslationStatistics]
             let voicePlayback: VoiceOutput.Statistics
+            let voiceOutputRoute: VoiceOutput.RouteDiagnostics
+            let processOutputDeviceIDs: [UInt32]?
+            let processOutputReadError: String?
             let automaticMicrophoneRouteActive: Bool
         }
         let snapshot = Snapshot(capturedBytes: Dictionary(uniqueKeysWithValues: counts.map { ($0.key.rawValue, $0.value) }),
             dispatchDroppedBytes: Dictionary(uniqueKeysWithValues: (audioRouter?.droppedBytes ?? [:]).map { ($0.key.rawValue, $0.value) }),
-            connections: connections, voicePlayback: voice.statistics, automaticMicrophoneRouteActive: microphoneRoute.active)
-        // Counts and protocol event names only: no audio, transcript or credentials.
+            connections: connections, voicePlayback: voice.statistics, voiceOutputRoute: voice.routeDiagnostics,
+            processOutputDeviceIDs: processOutputDeviceIDs, processOutputReadError: processOutputReadError,
+            automaticMicrophoneRouteActive: microphoneRoute.active)
+        // Counts, protocol event names and device routes only: no audio, transcript or credentials.
         do {
             let data = try JSONEncoder().encode(snapshot)
             try data.write(to: store.folder(id).appendingPathComponent("audio-diagnostics.json"), options: .atomic)

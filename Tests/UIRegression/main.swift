@@ -196,7 +196,12 @@ import MeetingCore
                     Button("欢迎页") { state.welcome() }
                     Button("临近日程") { state.calendarDue(overlapping: true) }
                     Button("录制中下一场") { state.calendarRecording() }
-                    Button("悬浮字幕") { state.controller.captionOverlay.toggle() }
+                    Button("悬浮字幕") {
+                        let overlay = state.controller.captionOverlay
+                        overlay.toggle()
+                        // Focus the non-activating panel so native UI tools can inspect and drag it.
+                        if overlay.visible { NSApp.windows.first(where: { $0 is CaptionPanel })?.makeKeyAndOrderFront(nil) }
+                    }
                     Button("安装引导") { state.previewAudioSetup = true }
                 }.padding(10) }
                 ContentView(controller: state.controller)

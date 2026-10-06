@@ -77,4 +77,17 @@ enum AudioDevices {
         guard object != 0 else { throw MeetingError.message("无法定位助手音频进程，已停止以避免音频循环。") }
         return object
     }
+    /// Process-level evidence complements the interpreter's own AudioUnit route.
+    /// Other audio paths in this process may legitimately add more devices here.
+    static func processOutputDeviceIDs() throws -> [AudioObjectID] {
+        let process = try ownProcess()
+        var address = AudioObjectPropertyAddress(mSelector: kAudioProcessPropertyDevices,
+            mScope: kAudioObjectPropertyScopeOutput, mElement: kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        try check(AudioObjectGetPropertyDataSize(process, &address, 0, nil, &size), "无法读取进程输出设备列表大小")
+        guard size > 0 else { return [] }
+        var ids = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+        try check(AudioObjectGetPropertyData(process, &address, 0, nil, &size, &ids), "无法读取进程输出设备列表")
+        return Array(ids.prefix(Int(size) / MemoryLayout<AudioObjectID>.size))
+    }
 }

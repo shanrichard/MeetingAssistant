@@ -4,9 +4,17 @@ import AudioToolbox
 import AudioSafety
 import MeetingCore
 
+struct VoicePlaybackDevice: Encodable, Equatable {
+    let id: AudioObjectID
+    let uid: String
+    let name: String
+    let alive: Bool
+}
+
 @MainActor protocol VoicePlayback: AnyObject {
     var onConfigurationChange: (() -> Void)? { get set }
     var isRunning: Bool { get }
+    var lastObservedDevice: VoicePlaybackDevice? { get }
     func start(device: AudioDevice) throws
     func validateRoute(device: AudioDevice) throws
     func schedule(_ pcm: Data, completion: @escaping @MainActor () -> Void) throws
@@ -17,6 +25,8 @@ import MeetingCore
     private let engine: AVAudioEngine
     private let player = AVAudioPlayerNode()
     private var configurationObserver: NSObjectProtocol?
+    private var boundDevice: AudioDevice?
+    private(set) var lastObservedDevice: VoicePlaybackDevice?
     var onConfigurationChange: (() -> Void)?
     var isRunning: Bool { engine.isRunning && player.isPlaying }
 
@@ -45,16 +55,20 @@ import MeetingCore
     }
 
     func validateRoute(device: AudioDevice) throws {
+        lastObservedDevice = nil
         let actual = try currentDevice()
         let uid = try AudioDevices.value(actual, kAudioDevicePropertyDeviceUID, initial: "" as CFString) as String
+        let name = try AudioDevices.value(actual, kAudioObjectPropertyName, initial: "" as CFString) as String
         let alive = try AudioDevices.value(actual, kAudioDevicePropertyDeviceIsAlive, initial: UInt32(0))
+        lastObservedDevice = VoicePlaybackDevice(id: actual, uid: uid, name: name, alive: alive != 0)
         guard device.virtual, device.output, actual == device.id, uid == device.uid, alive != 0 else {
-            throw MeetingError.message("译音输出未连接到所选虚拟设备，已停止发送。")
+            throw MeetingError.message("译音输出设备不匹配：预期 \(device.name)，实际为 \(name)；已停止向该设备发送。")
         }
     }
 
     func start(device: AudioDevice) throws {
         stop()
+        lastObservedDevice = nil
         guard device.virtual, device.output, let unit = engine.outputNode.audioUnit else {
             throw MeetingError.message("译音输出设备不可用。")
         }
@@ -71,11 +85,16 @@ import MeetingCore
             throw MeetingError.message("虚拟音频设备的格式暂时不可用。")
         }
         try AudioSafety.startPlayback(engine, player: player, outputFormat: format)
-        do { try validateRoute(device: device) }
+        do { try validateRoute(device: device); boundDevice = device }
         catch { stop(); throw error }
     }
 
     func schedule(_ pcm: Data, completion: @escaping @MainActor () -> Void) throws {
+        // An engine can still be running after its device changes. The initial
+        // binding and a delayed configuration notification are not a playback gate.
+        guard let boundDevice else { throw MeetingError.message("译音输出尚未绑定虚拟设备。") }
+        do { try validateRoute(device: boundDevice) }
+        catch { stop(); throw error }
         let count = pcm.count / 2
         guard let format = AVAudioFormat(standardFormatWithSampleRate: 24000, channels: 1),
               let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(count)) else {
@@ -93,5 +112,8 @@ import MeetingCore
         }
     }
 
-    func stop() { AudioSafety.stopPlayback(engine, player: player) }
+    func stop() {
+        boundDevice = nil
+        AudioSafety.stopPlayback(engine, player: player)
+    }
 }

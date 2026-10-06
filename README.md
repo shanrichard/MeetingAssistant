@@ -19,7 +19,7 @@
 
 A native SwiftUI app that captures your microphone and system audio, shows live captions with translations, and turns the saved transcript into a summary with references. Bring your own OpenAI API key; no developer-hosted backend is required.
 
-> **Project status:** prototype, source version **0.1.17 (19)**. Offline checks pass, while fresh-machine installation and real remote-listener acceptance remain work in progress. The app interface is currently primarily Simplified Chinese; this README is available in both languages.
+> **Project status:** prototype, source version **0.1.21 (23)**. Offline checks pass, while fresh-machine installation and real remote-listener acceptance remain work in progress. The app interface is currently primarily Simplified Chinese; this README is available in both languages.
 
 ## Features
 
@@ -67,7 +67,7 @@ If the compiler reports an incompatible SDK, select a matching Xcode/Command Lin
 1. Open Settings, enter your OpenAI API key, choose **Save**, then verify the connection. In an organization build, connect your work Google account from **Coming up** in the sidebar (or **Settings → Google Account**); the sidebar then lists the next 7 days of meetings, and meetings about to start appear at the top of the main window and start with the calendar event linked.
 2. Select a physical microphone, the caption/summary language, and the language you want to speak to others.
 3. Start a meeting and grant the requested microphone and system-audio permissions. Headphones are recommended.
-4. Floating captions appear above your meeting window. Hover to show controls for pause, translated speech, font size, background opacity, and click-through. Move the pointer onto the lock in the top-right corner to turn click-through off. **⇧⌘T** shows or hides the captions; defaults are under **Settings → 悬浮字幕**.
+4. Floating captions appear above your meeting window. Drag the caption background or the three-line handle on the left of the toolbar to move them; the position is saved when you release. Hover to show controls for pause, translated speech, font size, background opacity, and click-through. When click-through is on, click the lock in the top-right corner to unlock before dragging. **⇧⌘T** shows or hides the captions; defaults are under **Settings → 悬浮字幕**.
 5. End the meeting to save the live transcript and recordings, then generate a summary and a concise topic-based title from the transcript. Manually chosen titles are retained. You can retry a failed summary later.
 
 ## Send translated speech

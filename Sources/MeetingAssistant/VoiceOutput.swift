@@ -8,14 +8,26 @@ import MeetingCore
         var completedBytes = 0
         var recoveries = 0
     }
+    struct RouteDiagnostics: Encodable {
+        var selectedDevice: VoicePlaybackDevice?
+        var lastObservedDevice: VoicePlaybackDevice?
+        var lastMismatchedDevice: VoicePlaybackDevice?
+        var lastError: String?
+        var lastCheckedAt: Date?
+        var running = false
+        var recovering = false
+    }
     private(set) var statistics = Statistics()
+    private(set) var routeDiagnostics = RouteDiagnostics()
     private let makePlayback: @MainActor () -> VoicePlayback
     private let listDevices: () throws -> [AudioDevice]
     private var playback: VoicePlayback?
     private var deviceUID: String?
+    private var boundDevice: AudioDevice?
     private var generation = UUID()
     private var playbackGeneration = UUID()
     private var recoveryTask: Task<Void, Never>?
+    private var routeMonitor: Task<Void, Never>?
     private var pendingPCM: [Data] = []
     private var queuedPCMBytes = 0
     var onState: ((String) -> Void)?
@@ -30,6 +42,7 @@ import MeetingCore
     func start(device: AudioDevice) throws {
         stop()
         statistics = Statistics()
+        routeDiagnostics = RouteDiagnostics()
         guard device.virtual, device.output else { throw MeetingError.message("请选择 BlackHole 等虚拟音频输出设备。") }
         deviceUID = device.uid
         let playback = makePlayback(), token = generation
@@ -41,10 +54,20 @@ import MeetingCore
             self.recoverConfiguration()
         }
         do {
-            try playback.start(device: selectedDevice())
+            let selected = try selectedDevice()
+            routeDiagnostics.selectedDevice = VoicePlaybackDevice(id: selected.id, uid: selected.uid, name: selected.name, alive: true)
+            try playback.start(device: selected)
+            boundDevice = selected
+            try validateRoute(device: selected)
             running = true
+            routeDiagnostics.running = true
+            startRouteMonitor()
             onState?("等待你的下一句发言")
-        } catch { stop(); throw error }
+        } catch {
+            routeDiagnostics.lastObservedDevice = playback.lastObservedDevice
+            routeDiagnostics.lastError = error.localizedDescription
+            stop(); throw error
+        }
     }
 
     private func selectedDevice() throws -> AudioDevice {
@@ -54,6 +77,42 @@ import MeetingCore
         return device
     }
 
+    private func validateRoute(device: AudioDevice) throws {
+        guard let playback else { throw MeetingError.message("译音播放器不可用。") }
+        defer {
+            routeDiagnostics.lastObservedDevice = playback.lastObservedDevice
+            routeDiagnostics.lastCheckedAt = Date()
+            routeDiagnostics.running = playback.isRunning
+        }
+        do { try playback.validateRoute(device: device) }
+        catch {
+            routeDiagnostics.lastMismatchedDevice = playback.lastObservedDevice
+            routeDiagnostics.lastError = error.localizedDescription
+            throw error
+        }
+    }
+
+    private func startRouteMonitor() {
+        let token = generation
+        routeMonitor = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+                guard let self, self.running, self.generation == token else { return }
+                self.checkRoute()
+            }
+        }
+    }
+
+    /// Also checks while no new PCM is arriving, so already queued speech cannot
+    /// keep playing indefinitely on a changed output when notifications are lost.
+    private func checkRoute() {
+        guard running, recoveryTask == nil, let playback, let boundDevice else { return }
+        do {
+            try validateRoute(device: boundDevice)
+            if !playback.isRunning { recoverConfiguration() }
+        } catch { recoverConfiguration() }
+    }
+
     private func recoverConfiguration() {
         guard running, let playback else { return }
         // A stopped node's completion callbacks can still arrive. Invalidate them
@@ -61,7 +120,9 @@ import MeetingCore
         playbackGeneration = UUID()
         queuedPCMBytes = pendingPCM.reduce(0) { $0 + $1.count }
         playback.stop()
+        routeDiagnostics.running = false
         guard recoveryTask == nil else { return }
+        routeDiagnostics.recovering = true
         statistics.recoveries += 1
         onState?("正在恢复译音输出")
         let token = generation
@@ -79,9 +140,13 @@ import MeetingCore
                     try playback.start(device: device)
                     try await Task.sleep(for: .milliseconds(200))
                     guard self.running, self.generation == token else { return }
-                    try playback.validateRoute(device: self.selectedDevice())
+                    let selected = try self.selectedDevice()
+                    try self.validateRoute(device: selected)
                     guard playback.isRunning else { continue }
+                    self.boundDevice = selected
+                    self.routeDiagnostics.selectedDevice = VoicePlaybackDevice(id: selected.id, uid: selected.uid, name: selected.name, alive: true)
                     self.recoveryTask = nil
+                    self.routeDiagnostics.recovering = false
                     let pending = self.pendingPCM; self.pendingPCM.removeAll()
                     self.onState?("等待你的下一句发言")
                     for pcm in pending {
@@ -90,7 +155,12 @@ import MeetingCore
                     }
                     return
                 } catch is CancellationError { return }
-                catch { playback.stop() }
+                catch {
+                    self.routeDiagnostics.lastObservedDevice = playback.lastObservedDevice
+                    self.routeDiagnostics.lastError = error.localizedDescription
+                    playback.stop()
+                    self.routeDiagnostics.running = false
+                }
             }
             guard let self, self.running, self.generation == token else { return }
             self.fail("无法恢复所选虚拟设备的译音输出，已停止发送。请确认设备可用后重新开始。")
@@ -98,10 +168,11 @@ import MeetingCore
     }
 
     func enqueuePCM(_ pcm: Data) {
-        guard running, !pcm.isEmpty, let playback else { return }
+        guard running, !pcm.isEmpty, playback != nil else { return }
         statistics.receivedBytes += pcm.count
-        // The engine can stop before its asynchronous notification reaches us.
-        if recoveryTask == nil, !playback.isRunning { recoverConfiguration() }
+        // Check the actual device even when the engine is still running. A route
+        // mismatch must stop it before this packet can be scheduled.
+        checkRoute()
         guard pcm.count % 2 == 0, pcm.count <= 480_000 - queuedPCMBytes else {
             fail("译音播放积压或音频无效，已停止发送。请确认输出设备后重新开始。"); return
         }
@@ -113,22 +184,33 @@ import MeetingCore
     private func schedule(_ pcm: Data) {
         let token = playbackGeneration
         do {
-            try playback?.schedule(pcm) { [weak self] in
+            guard let playback, let boundDevice else { throw MeetingError.message("译音输出尚未绑定虚拟设备。") }
+            try validateRoute(device: boundDevice)
+            try playback.schedule(pcm) { [weak self] in
                 guard let self, self.playbackGeneration == token else { return }
                 self.queuedPCMBytes = max(0, self.queuedPCMBytes - pcm.count)
                 self.statistics.completedBytes += pcm.count
             }
             statistics.scheduledBytes += pcm.count
-            onState?("正在向虚拟麦克风发送实时译音")
-        } catch { fail(error.localizedDescription) }
+            onState?("正在向 \(boundDevice.name) 发送实时译音")
+        } catch {
+            routeDiagnostics.lastObservedDevice = playback?.lastObservedDevice
+            if let actual = playback?.lastObservedDevice, actual.uid != deviceUID || !actual.alive {
+                routeDiagnostics.lastMismatchedDevice = actual
+            }
+            routeDiagnostics.lastError = error.localizedDescription
+            fail(error.localizedDescription)
+        }
     }
 
     private func fail(_ message: String) { stop(); onError?(message) }
 
     func stop() {
         generation = UUID(); playbackGeneration = UUID(); running = false
+        routeMonitor?.cancel(); routeMonitor = nil
+        routeDiagnostics.running = false; routeDiagnostics.recovering = false
         recoveryTask?.cancel(); recoveryTask = nil
-        pendingPCM.removeAll(); queuedPCMBytes = 0; deviceUID = nil
+        pendingPCM.removeAll(); queuedPCMBytes = 0; deviceUID = nil; boundDevice = nil
         playback?.onConfigurationChange = nil
         playback?.stop(); playback = nil
         onState?("译音未发送")
